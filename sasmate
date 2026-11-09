@@ -222,7 +222,7 @@ function Funcs:StopFlight()
 	end
 
 	if Flight.button then
-		Flight.button.BackgroundColor3 = Color3.fromRGB(35, 35, 35)
+		Flight.button.BackgroundColor3 = Color3.fromRGB(110, 50, 190)
 	end
 end
 
@@ -250,7 +250,7 @@ function Funcs:StartFlight()
 	Flight.bg, Flight.bv = bg, bv
 
 	if Flight.button then
-		Flight.button.BackgroundColor3 = Color3.fromRGB(40, 140, 70)
+		Flight.button.BackgroundColor3 = Color3.fromRGB(170, 90, 255)
 	end
 
 	Connections.Flight = RunService.RenderStepped:Connect(function()
@@ -315,12 +315,12 @@ function Funcs:FlyButton(v)
 	Btn.Parent = Gui
 	Btn.AnchorPoint = Vector2.new(0.5, 0.5)
 	Btn.Position = UDim2.new(1, -60, 0.6, 0)
-	Btn.Size = UDim2.new(0, 55, 0, 55)
-	Btn.BackgroundColor3 = Flight.active and Color3.fromRGB(40, 140, 70) or Color3.fromRGB(35, 35, 35)
+	Btn.Size = UDim2.new(0, 42, 0, 42)
+	Btn.BackgroundColor3 = Flight.active and Color3.fromRGB(170, 90, 255) or Color3.fromRGB(110, 50, 190)
 	Btn.Text = "FLY"
-	Btn.TextColor3 = Color3.fromRGB(225, 225, 225)
+	Btn.TextColor3 = Color3.fromRGB(255, 255, 255)
 	Btn.Font = Enum.Font.GothamBold
-	Btn.TextSize = 16
+	Btn.TextSize = 13
 	Btn.AutoButtonColor = false
 
 	local Corner = Instance.new("UICorner")
@@ -328,7 +328,7 @@ function Funcs:FlyButton(v)
 	Corner.Parent = Btn
 
 	local Stroke = Instance.new("UIStroke")
-	Stroke.Color = Color3.fromRGB(25, 25, 25)
+	Stroke.Color = Color3.fromRGB(60, 20, 110)
 	Stroke.Thickness = 2
 	Stroke.Parent = Btn
 
