@@ -217,28 +217,6 @@ function Funcs:UIScale(Value)
 end
 
 
--- MARK: Wood Funcs
---
-
--- Teleports every loose log you own to just above your character
-function Funcs:TPWood()
-	local Root = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
-	if not Root then return end
-
-	local Remote = game:GetService("ReplicatedStorage").Interaction.ClientIsDragging
-
-	for _, Log in ipairs(workspace.LogModels:GetChildren()) do
-		local Owner = Log:FindFirstChild("Owner")
-		if Log.Name:sub(1, 6) == "Loose_" and Owner and Owner.Value == LocalPlayer then
-			Log:MoveTo(Root.Position + Vector3.new(0, 20, 0))
-			for _ = 1, 100 do
-				Remote:FireServer(Log)
-			end
-		end
-	end
-end
-
-
 -- MARK: Flight Funcs
 --
 
@@ -578,14 +556,6 @@ end)
 --
 Tab = UI:Tab("Wood", "6022668898")
 
--- [[ Section 1 ]]
---
-Section = Tab:Section("Wood")
-
-Section:Button("TP Wood to You", function()
-	Funcs:TPWood()
-end)
-
 
 -- MARK: Credits Tab
 --
@@ -617,3 +587,4 @@ end)
 Section:Toggle("Fly Button", false, function(Value)
 	Funcs:FlyButton(Value)
 end)
+
