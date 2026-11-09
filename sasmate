@@ -15,6 +15,7 @@ local Players          = game:GetService("Players")
 local Lighting         = game:GetService("Lighting")
 local RunService       = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
+local ReplicatedStorage  = game:GetService("ReplicatedStorage")
 local LocalPlayer      = Players.LocalPlayer
 local Character        = LocalPlayer.Character or LocalPlayer.CharacterAdded:Wait()
 local Humanoid         = Character:WaitForChild("Humanoid")
@@ -52,6 +53,13 @@ local Flight = {
 	ctrl   = { f = 0, b = 0, l = 0, r = 0 },
 	bg     = nil,
 	bv     = nil,
+}
+
+-- Wood runtime state
+local Wood = {
+	targets = {},  -- [treeClass] = true while that wood's toggle is on
+	running = false,
+	lastMsg = {},  -- [treeClass] = last notification shown (avoids spam)
 }
 
 
@@ -233,6 +241,290 @@ function Funcs:SetTimeMode(Mode)
 			Lighting.ClockTime = TimeTargets[Config.timeMode]
 		end
 	end)
+end
+
+
+-- MARK: Wood Funcs
+--
+
+local function GetRoot()
+	local Char = LocalPlayer.Character
+	return Char and Char:FindFirstChild("HumanoidRootPart"), Char and Char:FindFirstChildOfClass("Humanoid")
+end
+
+function Funcs:GetTreeRegions()
+	local Regions = {}
+	for _, Child in ipairs(workspace:GetChildren()) do
+		if Child.Name == "TreeRegion" then
+			table.insert(Regions, Child)
+		end
+	end
+	return Regions
+end
+
+-- Every wood type that currently exists in the map
+function Funcs:GetTreeClasses()
+	local Classes = {}
+	for _, Region in ipairs(Funcs:GetTreeRegions()) do
+		for _, Tree in ipairs(Region:GetChildren()) do
+			local Class = Tree:FindFirstChild("TreeClass")
+			if Class and not table.find(Classes, Class.Value) then
+				table.insert(Classes, Class.Value)
+			end
+		end
+	end
+	table.sort(Classes)
+	return Classes
+end
+
+function Funcs:GetAxeStats(AxeName, TreeClass)
+	local Folder = ReplicatedStorage:FindFirstChild("AxeClasses")
+	local Module = Folder and Folder:FindFirstChild("AxeClass_" .. AxeName)
+	if not Module then return nil end
+
+	local Ok, Stats = pcall(function()
+		return require(Module).new()
+	end)
+	if not Ok or not Stats then return nil end
+
+	if Stats.SpecialTrees and Stats.SpecialTrees[TreeClass] then
+		for Key, Val in next, Stats.SpecialTrees[TreeClass] do
+			Stats[Key] = Val
+		end
+	end
+	return Stats
+end
+
+-- Highest damage axe in the backpack for this wood type
+function Funcs:GetBestAxe(TreeClass)
+	local Best, BestStats
+	for _, Tool in ipairs(LocalPlayer.Backpack:GetChildren()) do
+		local ToolName = Tool:FindFirstChild("ToolName")
+		if Tool.Name ~= "BlueprintTool" and ToolName then
+			local Stats = Funcs:GetAxeStats(ToolName.Value, TreeClass)
+			if Stats and (not BestStats or Stats.Damage > BestStats.Damage) then
+				Best, BestStats = Tool, Stats
+			end
+		end
+	end
+	return Best, BestStats
+end
+
+local function GetModelMass(Model)
+	local Total, Sections = 0, 0
+	for _, Part in ipairs(Model:GetDescendants()) do
+		if Part:IsA("BasePart") and Part.Name ~= "Leaves" then
+			if Part.Name == "WoodSection" then
+				Sections = Sections + 1
+			end
+			Total = Total + Part.Mass
+		end
+	end
+	return Total, Sections
+end
+
+-- Heaviest unowned tree of the given wood type
+function Funcs:FindTree(TreeClass)
+	local Found = {}
+	for _, Region in ipairs(Funcs:GetTreeRegions()) do
+		for _, Tree in ipairs(Region:GetChildren()) do
+			if Tree:IsA("Model") and Tree:FindFirstChild("CutEvent") then
+				local Class = Tree:FindFirstChild("TreeClass")
+				local Owner = Tree:FindFirstChild("Owner")
+				if Owner and Class and Owner.Value == nil and Class.Value == TreeClass then
+					local Mass, Sections = GetModelMass(Tree)
+					if Sections > 1 then
+						table.insert(Found, { Tree = Tree, Mass = Mass })
+					end
+				end
+			end
+		end
+	end
+	table.sort(Found, function(A, B)
+		return A.Mass > B.Mass
+	end)
+	return Found[1] and Found[1].Tree or nil
+end
+
+-- Needed for the LoneCave tree
+function Funcs:ResetRootJoint()
+	local Root = GetRoot()
+	local Joint = Root and Root:FindFirstChild("RootJoint")
+	if Joint then
+		Joint:Clone().Parent = Joint.Parent
+		Joint:Destroy()
+		task.wait()
+	end
+end
+
+-- Swings the axe until a log owned by you appears (or the toggle is switched off)
+function Funcs:ChopTree(Tree, Axe, Stats, TreeClass)
+	local Root = GetRoot()
+	local Section = Tree:FindFirstChild("WoodSection")
+	if not Root or not Section then return nil end
+
+	Root.CFrame = CFrame.new(Section.Position + Vector3.new(5, 0, 0))
+	task.wait(0.25)
+
+	local Props = {
+		tool         = Axe,
+		height       = 0.3,
+		faceVector   = Vector3.new(1, 0, 0),
+		sectionId    = 1,
+		hitPoints    = Stats.Damage,
+		cooldown     = Stats.SwingCooldown,
+		cuttingClass = "Axe",
+	}
+
+	local NewLog
+	local Conn = workspace.LogModels.ChildAdded:Connect(function(Log)
+		task.wait()
+		local Owner = Log:FindFirstChild("Owner")
+		if Owner and Owner.Value == LocalPlayer then
+			NewLog = Log
+		end
+	end)
+
+	local Remote = ReplicatedStorage.Interaction.RemoteProxy
+	local Started = os.clock()
+
+	while not NewLog and Wood.targets[TreeClass] and Tree.Parent and os.clock() - Started < 60 do
+		Remote:FireServer(Tree.CutEvent, Props)
+		task.wait(Stats.SwingCooldown)
+	end
+
+	Conn:Disconnect()
+	return NewLog
+end
+
+-- Finds, chops and brings one tree of this wood type to where you stood
+function Funcs:BringTree(TreeClass)
+	local Root, Hum = GetRoot()
+	if not Root or not Hum then return false, "Character isn't loaded." end
+
+	local Home = Root.CFrame
+	Funcs:StopFlight()
+	Hum:UnequipTools()
+	task.wait()
+
+	local Axe, Stats = Funcs:GetBestAxe(TreeClass)
+	if not Axe then return false, "Pick up an axe first." end
+
+	local Tree = Funcs:FindTree(TreeClass)
+	if not Tree then return false, "No free " .. TreeClass .. " tree found." end
+
+	local LoneCave = TreeClass == "LoneCave"
+	if LoneCave then
+		if Axe.ToolName.Value ~= "EndTimesAxe" then
+			return false, "You need the End Times Axe for this tree."
+		end
+		Funcs:ResetRootJoint()
+	end
+
+	-- Keep you next to the tree while chopping
+	local Lock
+	if not LoneCave then
+		Lock = RunService.Heartbeat:Connect(function()
+			local R = GetRoot()
+			local S = Tree:FindFirstChild("WoodSection")
+			if R and S then
+				R.CFrame = CFrame.new(S.Position + Vector3.new(5, 3, 0))
+			end
+		end)
+	end
+
+	local Log = Funcs:ChopTree(Tree, Axe, Stats, TreeClass)
+
+	if Lock then Lock:Disconnect() end
+	if not Log then return false, "Chop cancelled or timed out." end
+
+	-- Take network ownership of the log, then pin it to your old position
+	task.wait(0.15)
+	local Section = Log:FindFirstChild("WoodSection")
+	if not Section then return false, "Log has no wood section." end
+
+	task.spawn(function()
+		for _ = 1, 60 do
+			ReplicatedStorage.Interaction.ClientIsDragging:FireServer(Log)
+			task.wait()
+		end
+	end)
+
+	task.wait(0.1)
+	Log.PrimaryPart = Section
+	for _ = 1, 60 do
+		Log.PrimaryPart.Velocity = Vector3.new(0, 0, 0)
+		Log:PivotTo(Home)
+		task.wait()
+	end
+
+	-- LoneCave: respawn so the log stays put
+	if LoneCave then
+		local _, H = GetRoot()
+		if H then H:UnequipTools() end
+		task.wait()
+		local Char = LocalPlayer.Character
+		if Char and Char:FindFirstChild("Head") then
+			Char.Head:Destroy()
+		end
+		LocalPlayer.CharacterAdded:Wait()
+		task.wait(1.5)
+	end
+
+	local NewRoot = GetRoot()
+	if NewRoot then
+		NewRoot.CFrame = Section.CFrame
+	end
+
+	return true, "Got the tree!"
+end
+
+-- One worker loops over every wood type whose toggle is on
+function Funcs:WoodLoop()
+	if Wood.running then return end
+	Wood.running = true
+
+	task.spawn(function()
+		while true do
+			local Queue = {}
+			for Class in pairs(Wood.targets) do
+				table.insert(Queue, Class)
+			end
+			if #Queue == 0 then break end
+
+			for _, Class in ipairs(Queue) do
+				if Wood.targets[Class] then
+					local Ok, Success, Msg = pcall(Funcs.BringTree, Funcs, Class)
+					if not Ok then
+						Success, Msg = false, tostring(Success)
+					end
+
+					if Success then
+						Wood.lastMsg[Class] = nil
+					else
+						-- only notify when the message changes, then retry shortly
+						if Wood.lastMsg[Class] ~= Msg then
+							Wood.lastMsg[Class] = Msg
+							Funcs:Notify(Class, Msg)
+						end
+						task.wait(3)
+					end
+				end
+			end
+
+			task.wait(0.5)
+		end
+		Wood.running = false
+	end)
+end
+
+function Funcs:WoodTarget(TreeClass, Value)
+	Wood.targets[TreeClass] = Value and true or nil
+	if Value then
+		Funcs:WoodLoop()
+	else
+		Wood.lastMsg[TreeClass] = nil
+	end
 end
 
 
@@ -571,7 +863,28 @@ Section:Toggle("Global Shadows", Config.globalShadows, function(Value)
 	Funcs:GlobalShadows(Value)
 end)
 
+-- MARK: Wood Tab
+--
 Tab = UI:Tab("Wood", "6022668898")
+
+-- [[ Section 1 ]]
+--
+Section = Tab:Section("Auto Bring Wood")
+
+do
+	local Classes = Funcs:GetTreeClasses()
+
+	if #Classes == 0 then
+		Section:Paragraph(" No trees found", " Rejoin the server and re-run the script")
+	else
+		-- One toggle per wood type: while on, trees of that type are chopped and brought to you
+		for _, Class in ipairs(Classes) do
+			Section:Toggle(Class, false, function(Value)
+				Funcs:WoodTarget(Class, Value)
+			end)
+		end
+	end
+end
 
 -- MARK: World Tab
 --
