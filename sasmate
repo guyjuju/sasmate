@@ -40,6 +40,90 @@ local Config = {
 
 -- UI Funcs
 --
+
+function Funcs:MobileToggle(v)
+
+	if v then
+		local ScreenGui = game.CoreGui:FindFirstChild("SasMate")
+		if not ScreenGui then return end
+
+		local ToggleContainer = Instance.new("Frame")
+		local UICorner = Instance.new("UICorner")
+		local UIStroke = Instance.new("UIStroke")
+		local Logo = Instance.new("ImageButton")
+		local UICorner_2 = Instance.new("UICorner")
+
+
+		ToggleContainer.Name = "ToggleContainer"
+		ToggleContainer.Parent = ScreenGui
+		ToggleContainer.AnchorPoint = Vector2.new(0, 0.5)
+		ToggleContainer.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+		ToggleContainer.BorderColor3 = Color3.fromRGB(0, 0, 0)
+		ToggleContainer.BorderSizePixel = 0
+		ToggleContainer.Position = UDim2.new(0, 10, 0.5, 0)
+		ToggleContainer.Size = UDim2.new(0, 35, 0, 35)
+
+		UICorner.CornerRadius = UDim.new(0, 250)
+		UICorner.Parent = ToggleContainer
+
+		UIStroke.Parent = ToggleContainer
+		UIStroke.Color = Color3.fromRGB(25, 25, 25)
+		UIStroke.Thickness = 2.000
+
+		Logo.Name = "Logo"
+		Logo.Parent = ToggleContainer
+		Logo.AnchorPoint = Vector2.new(0.5, 0.5)
+		Logo.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+		Logo.BackgroundTransparency = 1.000
+		Logo.BorderColor3 = Color3.fromRGB(0, 0, 0)
+		Logo.BorderSizePixel = 0
+		Logo.Position = UDim2.new(0.5, 0, 0.5, 0)
+		Logo.Size = UDim2.new(1, 0, 1, 0)
+
+		if not isfile("SasMate/assets/ToggleLogo.jpeg") then
+			local Success, LogoData = pcall(function()
+				return game:HttpGet("https://nexushub.lol/api/cdn/ToggleLogo.jpeg")
+			end)
+
+			if Success and LogoData then
+				writefile("SasMate/assets/ToggleLogo.jpeg", LogoData)
+			end
+		end
+
+		local Success, Asset = pcall(function()
+			return getcustomasset("SasMate/assets/ToggleLogo.jpeg")
+		end)
+
+		Logo.Image = Success and Asset or "rbxassetid://0"
+
+		UICorner_2.CornerRadius = UDim.new(0, 250)
+		UICorner_2.Parent = Logo
+
+        Connections.MobileToggle = Logo.MouseButton1Click:Connect(function()
+            local Main = ScreenGui:FindFirstChild("Main")
+            if Main then
+                Main.Visible = not Main.Visible
+            end
+        end)
+
+	else
+
+		if Connections.MobileToggle then
+			Connections.MobileToggle:Disconnect()
+			Connections.MobileToggle = nil
+		end
+
+		local ScreenGui = game.CoreGui:FindFirstChild("SasMate")
+		if not ScreenGui then return end
+
+		local ToggleContainer = ScreenGui:FindFirstChild("ToggleContainer")
+		if ToggleContainer then
+			ToggleContainer:Destroy()
+		end
+
+	end
+end
+
 function Funcs:Notify(Title, Message)
 	Lib:Notify(Title, Message)
 end
@@ -146,7 +230,7 @@ do
 end
 
 Lib = loadstring(game:HttpGet("https://raw.githubusercontent.com/guyjuju/sas-mate/refs/heads/main/ui.lua"))()
-local UI = Lib:Create("Sas Mate", "Lumber Tycoon 2")
+local UI = Lib:Create("Sas Mate", "Lumber Tycoon 2", "https://nexushub.lol/api/cdn/Background.png")
 local Tab, Section
 
 
@@ -232,3 +316,10 @@ Section = Tab:Section("Contributors")
 Section:Paragraph(" JuJu", " Script Owner & Developer")
 Section:Paragraph(" q2", " Helped make sas mate")
 Section:Paragraph(" pov", " Helped make sas mate")
+
+Section = Tab:Section("Mobile")
+
+Section:Toggle("UI Toggle", false, function(Value)
+	Funcs:MobileToggle(Value)
+end)
+
