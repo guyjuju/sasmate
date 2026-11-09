@@ -243,7 +243,7 @@ Tab = UI:Tab("Player", "5012544693")
 Section = Tab:Section("Movement")
 
 
-Section:Slider("Walk Speed", Config.walkSpeed, 16, 100, false, function(Value)
+Section:Slider("Walk Speed", Config.walkSpeed, 16, 500, false, function(Value)
 	Config.walkSpeed = Value
 
 	if Value ~= 16 then
@@ -322,4 +322,3 @@ Section = Tab:Section("Mobile")
 Section:Toggle("UI Toggle", false, function(Value)
 	Funcs:MobileToggle(Value)
 end)
-
