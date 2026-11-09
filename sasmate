@@ -537,7 +537,7 @@ Section:Toggle("Global Shadows", Config.globalShadows, function(Value)
 	Funcs:GlobalShadows(Value)
 end)
 
-
+Tab = UI:Tab("Wood", "6022668898")
 -- MARK: Credits Tab
 --
 Tab = UI:Tab("Settings", "6031280882")
@@ -550,8 +550,6 @@ Section:Paragraph(" JuJu", " Script Owner & Developer")
 Section:Paragraph(" q2", " Helped make sas mate")
 Section:Paragraph(" pov", " Helped make sas mate")
 Section:Paragraph(" soda", " runing discord")
-
-Tab = UI:Tab("Wood", "6022668898")
 
 
 Section = Tab:Section("Mobile")
