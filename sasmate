@@ -57,9 +57,10 @@ local Flight = {
 
 -- Wood runtime state
 local Wood = {
-	targets = {},  -- [treeClass] = true while that wood's toggle is on
-	running = false,
-	lastMsg = {},  -- [treeClass] = last notification shown (avoids spam)
+	active        = nil,   -- wood type currently being brought (nil = off)
+	running       = false, -- worker loop is alive
+	returnPending = false, -- teleport to base once the loop has stopped
+	lastMsg       = {},    -- [treeClass] = last notification shown (avoids spam)
 }
 
 
@@ -388,7 +389,7 @@ function Funcs:ChopTree(Tree, Axe, Stats, TreeClass)
 	local Remote = ReplicatedStorage.Interaction.RemoteProxy
 	local Started = os.clock()
 
-	while not NewLog and Wood.targets[TreeClass] and Tree.Parent and os.clock() - Started < 60 do
+	while not NewLog and Wood.active == TreeClass and Tree.Parent and os.clock() - Started < 60 do
 		Remote:FireServer(Tree.CutEvent, Props)
 		task.wait(Stats.SwingCooldown)
 	end
@@ -479,52 +480,82 @@ function Funcs:BringTree(TreeClass)
 	return true, "Got the tree!"
 end
 
--- One worker loops over every wood type whose toggle is on
+-- Teleports you to the middle of your own base (property)
+function Funcs:ReturnToBase()
+	local Root = GetRoot()
+	local Properties = workspace:FindFirstChild("Properties")
+	if not Root or not Properties then return false end
+
+	for _, Property in ipairs(Properties:GetChildren()) do
+		local Owner = Property:FindFirstChild("Owner")
+		local Origin = Property:FindFirstChild("OriginSquare")
+		if Owner and Owner.Value == LocalPlayer and Origin then
+			Root.CFrame = Origin.CFrame + Vector3.new(0, 5, 0)
+			return true
+		end
+	end
+
+	return false
+end
+
+-- Worker: keeps bringing the selected wood until it's switched off
 function Funcs:WoodLoop()
 	if Wood.running then return end
 	Wood.running = true
 
 	task.spawn(function()
-		while true do
-			local Queue = {}
-			for Class in pairs(Wood.targets) do
-				table.insert(Queue, Class)
+		while Wood.active do
+			local Class = Wood.active
+
+			local Ok, Success, Msg = pcall(Funcs.BringTree, Funcs, Class)
+			if not Ok then
+				Success, Msg = false, tostring(Success)
 			end
-			if #Queue == 0 then break end
 
-			for _, Class in ipairs(Queue) do
-				if Wood.targets[Class] then
-					local Ok, Success, Msg = pcall(Funcs.BringTree, Funcs, Class)
-					if not Ok then
-						Success, Msg = false, tostring(Success)
+			if Wood.active == Class then
+				if Success then
+					Wood.lastMsg[Class] = nil
+				else
+					-- only notify when the message changes, then retry shortly
+					if Wood.lastMsg[Class] ~= Msg then
+						Wood.lastMsg[Class] = Msg
+						Funcs:Notify(Class, Msg)
 					end
-
-					if Success then
-						Wood.lastMsg[Class] = nil
-					else
-						-- only notify when the message changes, then retry shortly
-						if Wood.lastMsg[Class] ~= Msg then
-							Wood.lastMsg[Class] = Msg
-							Funcs:Notify(Class, Msg)
-						end
-						task.wait(3)
-					end
+					task.wait(3)
 				end
 			end
 
 			task.wait(0.5)
 		end
+
 		Wood.running = false
+
+		-- switched off: go back to the base
+		if Wood.returnPending then
+			Wood.returnPending = false
+			if not Funcs:ReturnToBase() then
+				Funcs:Notify("Wood", "Couldn't find your base.")
+			end
+		end
 	end)
 end
 
-function Funcs:WoodTarget(TreeClass, Value)
-	Wood.targets[TreeClass] = Value and true or nil
-	if Value then
-		Funcs:WoodLoop()
-	else
-		Wood.lastMsg[TreeClass] = nil
+-- "Off" (or nil) stops and returns you to base; any other value starts that wood type
+function Funcs:WoodSelect(Choice)
+	if type(Choice) == "table" then Choice = Choice[1] end
+
+	if Choice == nil or Choice == "Off" then
+		if Wood.active then
+			Wood.active = nil
+			Wood.returnPending = true
+		end
+		return
 	end
+
+	Wood.active = Choice
+	Wood.returnPending = false
+	Wood.lastMsg = {}
+	Funcs:WoodLoop()
 end
 
 
@@ -877,11 +908,29 @@ do
 	if #Classes == 0 then
 		Section:Paragraph(" No trees found", " Rejoin the server and re-run the script")
 	else
-		-- One toggle per wood type: while on, trees of that type are chopped and brought to you
+		-- Pick a wood type to start; pick "Off" to stop and go back to your base
+		local Options = { "Off" }
 		for _, Class in ipairs(Classes) do
-			Section:Toggle(Class, false, function(Value)
-				Funcs:WoodTarget(Class, Value)
+			table.insert(Options, Class)
+		end
+
+		local Ok = pcall(function()
+			Section:Dropdown("Wood Type", Options, "Off", function(Value)
+				Funcs:WoodSelect(Value)
 			end)
+		end)
+
+		-- Fallback if the UI library has no Dropdown: one toggle per wood type
+		if not Ok then
+			for _, Class in ipairs(Classes) do
+				Section:Toggle(Class, false, function(Value)
+					if Value then
+						Funcs:WoodSelect(Class)
+					elseif Wood.active == Class then
+						Funcs:WoodSelect("Off")
+					end
+				end)
+			end
 		end
 	end
 end
