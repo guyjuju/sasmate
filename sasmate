@@ -498,64 +498,49 @@ function Funcs:ReturnToBase()
 	return false
 end
 
--- Worker: keeps bringing the selected wood until it's switched off
-function Funcs:WoodLoop()
-	if Wood.running then return end
+-- Brings ONE tree of this wood type, then stops
+function Funcs:BringOnce(TreeClass)
+	if type(TreeClass) == "table" then TreeClass = TreeClass[1] end
+	if not TreeClass then return end
+
+	if Wood.running then
+		Funcs:Notify("Wood", "Already bringing a tree. Press Stop first.")
+		return
+	end
+
 	Wood.running = true
+	Wood.active = TreeClass
+	Wood.returnPending = false
 
 	task.spawn(function()
-		while Wood.active do
-			local Class = Wood.active
-
-			local Ok, Success, Msg = pcall(Funcs.BringTree, Funcs, Class)
-			if not Ok then
-				Success, Msg = false, tostring(Success)
-			end
-
-			if Wood.active == Class then
-				if Success then
-					Wood.lastMsg[Class] = nil
-				else
-					-- only notify when the message changes, then retry shortly
-					if Wood.lastMsg[Class] ~= Msg then
-						Wood.lastMsg[Class] = Msg
-						Funcs:Notify(Class, Msg)
-					end
-					task.wait(3)
-				end
-			end
-
-			task.wait(0.5)
+		local Ok, Success, Msg = pcall(Funcs.BringTree, Funcs, TreeClass)
+		if not Ok then
+			Success, Msg = false, tostring(Success)
 		end
 
+		Wood.active = nil
 		Wood.running = false
 
-		-- switched off: go back to the base
 		if Wood.returnPending then
+			-- Stop was pressed: go back to the base
 			Wood.returnPending = false
 			if not Funcs:ReturnToBase() then
 				Funcs:Notify("Wood", "Couldn't find your base.")
 			end
+		elseif not Success then
+			Funcs:Notify(TreeClass, Msg)
 		end
 	end)
 end
 
--- "Off" (or nil) stops and returns you to base; any other value starts that wood type
-function Funcs:WoodSelect(Choice)
-	if type(Choice) == "table" then Choice = Choice[1] end
-
-	if Choice == nil or Choice == "Off" then
-		if Wood.active then
-			Wood.active = nil
-			Wood.returnPending = true
-		end
-		return
+-- Cancels the current chop (if any) and teleports you to your base
+function Funcs:StopWood()
+	if Wood.running then
+		Wood.active = nil
+		Wood.returnPending = true
+	elseif not Funcs:ReturnToBase() then
+		Funcs:Notify("Wood", "Couldn't find your base.")
 	end
-
-	Wood.active = Choice
-	Wood.returnPending = false
-	Wood.lastMsg = {}
-	Funcs:WoodLoop()
 end
 
 
@@ -908,14 +893,13 @@ do
 	if #Classes == 0 then
 		Section:Paragraph(" No trees found", " Rejoin the server and re-run the script")
 	else
-		-- Pick a wood type to start; pick "Off" to stop and go back to your base
-		local Options = { "Off" }
-		for _, Class in ipairs(Classes) do
-			table.insert(Options, Class)
-		end
+		-- Click a wood type to bring ONE tree of it, then it stops
+		Section:DropDown("Bring Wood", Classes, function(Value)
+			Funcs:BringOnce(Value)
+		end)
 
-		Section:DropDown("Wood Type", Options, function(Value)
-			Funcs:WoodSelect(Value)
+		Section:Button("Stop & Return to Base", function()
+			Funcs:StopWood()
 		end)
 	end
 end
