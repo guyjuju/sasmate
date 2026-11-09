@@ -267,7 +267,7 @@ Section:Slider("Walk Speed", Config.walkSpeed, 16, 500, false, function(Value)
 end)
 
 
-Section:Slider("Jump Power", Config.jumpPower, 50, 200, false, function(Value)
+Section:Slider("Jump Power", Config.jumpPower, 50, 500, false, function(Value)
 	Config.jumpPower = Value
 	Funcs:JumpPower(Value)
 end)
