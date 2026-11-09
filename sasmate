@@ -220,6 +220,10 @@ function Funcs:StopFlight()
 	if Humanoid and Humanoid.Parent then
 		Humanoid.PlatformStand = false
 	end
+
+	if Flight.button then
+		Flight.button.BackgroundColor3 = Color3.fromRGB(35, 35, 35)
+	end
 end
 
 function Funcs:StartFlight()
@@ -245,6 +249,10 @@ function Funcs:StartFlight()
 
 	Flight.bg, Flight.bv = bg, bv
 
+	if Flight.button then
+		Flight.button.BackgroundColor3 = Color3.fromRGB(40, 140, 70)
+	end
+
 	Connections.Flight = RunService.RenderStepped:Connect(function()
 		if not Humanoid or not Humanoid.Parent or Humanoid.Health <= 0 or not Root.Parent then
 			Funcs:StopFlight()
@@ -255,8 +263,16 @@ function Funcs:StartFlight()
 		Humanoid.PlatformStand = true
 
 		local c = Flight.ctrl
-		local Dir = Camera.CFrame.LookVector * (c.f + c.b)
-			+ Camera.CFrame.RightVector * (c.l + c.r)
+		local Forward, Right = c.f + c.b, c.l + c.r
+
+		-- No keys held (mobile thumbstick / gamepad): use the humanoid's move direction
+		if Forward == 0 and Right == 0 then
+			local Rel = Camera.CFrame:VectorToObjectSpace(Humanoid.MoveDirection)
+			Forward, Right = -Rel.Z, Rel.X
+		end
+
+		local Dir = Camera.CFrame.LookVector * Forward
+			+ Camera.CFrame.RightVector * Right
 
 		bv.Velocity = Dir.Magnitude > 0 and Dir.Unit * Config.flightSpeed or Vector3.zero
 		bg.CFrame = Camera.CFrame
@@ -276,6 +292,80 @@ function Funcs:FlightEnabled(Value)
 	if not Value then
 		Funcs:StopFlight()
 	end
+end
+
+-- On-screen draggable fly button for mobile
+function Funcs:FlyButton(v)
+	if not v then
+		if Flight.gui then Flight.gui:Destroy() end
+		for _, Conn in ipairs(Flight.btnConns or {}) do Conn:Disconnect() end
+		Flight.gui, Flight.button, Flight.btnConns = nil, nil, nil
+		return
+	end
+
+	if Flight.gui then return end
+
+	local Gui = Instance.new("ScreenGui")
+	Gui.Name = "SasMateFly"
+	Gui.ResetOnSpawn = false
+	Gui.Parent = (typeof(gethui) == "function" and gethui()) or game.CoreGui
+
+	local Btn = Instance.new("TextButton")
+	Btn.Name = "FlyButton"
+	Btn.Parent = Gui
+	Btn.AnchorPoint = Vector2.new(0.5, 0.5)
+	Btn.Position = UDim2.new(1, -60, 0.6, 0)
+	Btn.Size = UDim2.new(0, 55, 0, 55)
+	Btn.BackgroundColor3 = Flight.active and Color3.fromRGB(40, 140, 70) or Color3.fromRGB(35, 35, 35)
+	Btn.Text = "FLY"
+	Btn.TextColor3 = Color3.fromRGB(225, 225, 225)
+	Btn.Font = Enum.Font.GothamBold
+	Btn.TextSize = 16
+	Btn.AutoButtonColor = false
+
+	local Corner = Instance.new("UICorner")
+	Corner.CornerRadius = UDim.new(0, 250)
+	Corner.Parent = Btn
+
+	local Stroke = Instance.new("UIStroke")
+	Stroke.Color = Color3.fromRGB(25, 25, 25)
+	Stroke.Thickness = 2
+	Stroke.Parent = Btn
+
+	Flight.gui, Flight.button = Gui, Btn
+
+	local Dragging, Moved, DragStart, StartPos = false, false, nil, nil
+	local Conns = {}
+	Flight.btnConns = Conns
+
+	table.insert(Conns, Btn.InputBegan:Connect(function(Input)
+		if Input.UserInputType == Enum.UserInputType.Touch or Input.UserInputType == Enum.UserInputType.MouseButton1 then
+			Dragging, Moved = true, false
+			DragStart, StartPos = Input.Position, Btn.Position
+		end
+	end))
+
+	table.insert(Conns, UserInputService.InputChanged:Connect(function(Input)
+		if Dragging and (Input.UserInputType == Enum.UserInputType.Touch or Input.UserInputType == Enum.UserInputType.MouseMovement) then
+			local Delta = Input.Position - DragStart
+			if Delta.Magnitude > 8 then Moved = true end
+			if Moved then
+				Btn.Position = UDim2.new(StartPos.X.Scale, StartPos.X.Offset + Delta.X, StartPos.Y.Scale, StartPos.Y.Offset + Delta.Y)
+			end
+		end
+	end))
+
+	table.insert(Conns, UserInputService.InputEnded:Connect(function(Input)
+		if Input.UserInputType == Enum.UserInputType.Touch or Input.UserInputType == Enum.UserInputType.MouseButton1 then
+			Dragging = false
+		end
+	end))
+
+	table.insert(Conns, Btn.MouseButton1Click:Connect(function()
+		if not Moved then
+			Funcs:ToggleFlight()
+		end
+	end))
 end
 
 local MoveKeys = {
@@ -393,7 +483,7 @@ Section:Slider("Walk Speed", Config.walkSpeed, 16, 500, false, function(Value)
 end)
 
 
-Section:Slider("Jump Power", Config.jumpPower, 50, 600, false, function(Value)
+Section:Slider("Jump Power", Config.jumpPower, 50, 200, false, function(Value)
 	Config.jumpPower = Value
 	Funcs:JumpPower(Value)
 end)
@@ -472,9 +562,13 @@ Section = Tab:Section("Contributors")
 Section:Paragraph(" JuJu", " Script Owner & Developer")
 Section:Paragraph(" q2", " Helped make sas mate")
 Section:Paragraph(" pov", " Helped make sas mate")
-Section:Paragraph(" soda", " runing discord")
+
 Section = Tab:Section("Mobile")
 
 Section:Toggle("UI Toggle", false, function(Value)
 	Funcs:MobileToggle(Value)
+end)
+
+Section:Toggle("Fly Button", false, function(Value)
+	Funcs:FlyButton(Value)
 end)
