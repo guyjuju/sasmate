@@ -574,6 +574,31 @@ function Funcs:StopWood()
 end
 
 
+-- MARK: Teleport Funcs
+--
+
+-- Coordinates taken from the old Lt2 Gui script
+local Locations = {
+	{ "WoodRus",     CFrame.new(265, 5, 57) },
+	{ "Spawn",       CFrame.new(155, 5, 74) },
+	{ "Volcano",     CFrame.new(-1585, 625, 1140) },
+	{ "Palm",        CFrame.new(2549, 5, -42) },
+	{ "Boxed Cars",  CFrame.new(509, 5.2, -1463) },
+	{ "Cave",        CFrame.new(3581, -177, 430) },
+	{ "Swamp",       CFrame.new(-1209, 138, -801) },
+	{ "Strange Man", CFrame.new(1061, 20, 1131) },
+	{ "The Den",     CFrame.new(323, 49, 1930) },
+}
+
+-- Always looks up your current character, so it still works after a respawn
+function Funcs:TeleportTo(Target)
+	local Root = GetRoot()
+	if not Root then return false end
+	Root.CFrame = Target
+	return true
+end
+
+
 -- MARK: Flight Funcs
 --
 
@@ -963,6 +988,29 @@ Section:Toggle("Set Night", false, function(Value)
 		Funcs:SetTimeMode(nil)
 	end
 end)
+
+-- [[ Section 2 ]]
+--
+Section = Tab:Section("Teleports")
+
+do
+	local Spots, Targets = { "Your Base" }, {}
+	for _, Location in ipairs(Locations) do
+		table.insert(Spots, Location[1])
+		Targets[Location[1]] = Location[2]
+	end
+
+	-- Pick a spot and you're teleported there right away
+	Section:DropDown("Teleport To", Spots, function(Value)
+		if Value == "Your Base" then
+			if not Funcs:ReturnToBase() then
+				Funcs:Notify("Teleport", "Couldn't find your base.")
+			end
+		elseif Targets[Value] then
+			Funcs:TeleportTo(Targets[Value])
+		end
+	end)
+end
 
 -- MARK: Credits Tab
 --
