@@ -4,19 +4,21 @@
  \___ \ / _` \___ \   | |\/| |/ _` | __/ _ \
   ___) | (_| |___) |  | |  | | (_| | ||  __/
  |____/ \__,_|____/   |_|  |_|\__,_|\__\___| V1
-                                           
+
                          a project by JuJu
                                     Nov. 2026,
 ]]
- 
- -- [[ Variables ]]
+
+-- [[ Variables ]]
 --
-local Players     = game:GetService("Players")
-local Lighting    = game:GetService("Lighting")
-local LocalPlayer = Players.LocalPlayer
-local Character   = LocalPlayer.Character or LocalPlayer.CharacterAdded:Wait()
-local Humanoid    = Character:WaitForChild("Humanoid")
-local Camera      = workspace.CurrentCamera
+local Players          = game:GetService("Players")
+local Lighting         = game:GetService("Lighting")
+local RunService       = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local LocalPlayer      = Players.LocalPlayer
+local Character        = LocalPlayer.Character or LocalPlayer.CharacterAdded:Wait()
+local Humanoid         = Character:WaitForChild("Humanoid")
+local Camera           = workspace.CurrentCamera
 
 
 -- [[ Tables ]]
@@ -35,6 +37,19 @@ local Config = {
 	clearFog      = false,
 	globalShadows = true,
 
+	-- Flight
+	flightEnabled = false, -- master toggle (allows the key to start/stop flying)
+	flightSpeed   = 150,
+	flightKey     = Enum.KeyCode.Q,
+
+}
+
+-- Flight runtime state
+local Flight = {
+	active = false,
+	ctrl   = { f = 0, b = 0, l = 0, r = 0 },
+	bg     = nil,
+	bv     = nil,
 }
 
 
@@ -99,12 +114,12 @@ function Funcs:MobileToggle(v)
 		UICorner_2.CornerRadius = UDim.new(0, 250)
 		UICorner_2.Parent = Logo
 
-        Connections.MobileToggle = Logo.MouseButton1Click:Connect(function()
-            local Main = ScreenGui:FindFirstChild("Main")
-            if Main then
-                Main.Visible = not Main.Visible
-            end
-        end)
+		Connections.MobileToggle = Logo.MouseButton1Click:Connect(function()
+			local Main = ScreenGui:FindFirstChild("Main")
+			if Main then
+				Main.Visible = not Main.Visible
+			end
+		end)
 
 	else
 
@@ -187,14 +202,124 @@ function Funcs:GlobalShadows(Value)
 	Lighting.GlobalShadows = Value
 end
 
+
+-- MARK: Flight Funcs
+--
+
+function Funcs:StopFlight()
+	Flight.active = false
+
+	if Connections.Flight then
+		Connections.Flight:Disconnect()
+		Connections.Flight = nil
+	end
+
+	if Flight.bg then Flight.bg:Destroy() Flight.bg = nil end
+	if Flight.bv then Flight.bv:Destroy() Flight.bv = nil end
+
+	if Humanoid and Humanoid.Parent then
+		Humanoid.PlatformStand = false
+	end
+end
+
+function Funcs:StartFlight()
+	if Flight.active then return end
+
+	Character = LocalPlayer.Character
+	local Root = Character and Character:FindFirstChild("HumanoidRootPart")
+	Humanoid = Character and Character:FindFirstChild("Humanoid")
+	if not Root or not Humanoid then return end
+
+	Flight.active = true
+
+	local bg = Instance.new("BodyGyro")
+	bg.P = 9e4
+	bg.MaxTorque = Vector3.new(9e9, 9e9, 9e9)
+	bg.CFrame = Root.CFrame
+	bg.Parent = Root
+
+	local bv = Instance.new("BodyVelocity")
+	bv.Velocity = Vector3.zero
+	bv.MaxForce = Vector3.new(9e9, 9e9, 9e9)
+	bv.Parent = Root
+
+	Flight.bg, Flight.bv = bg, bv
+
+	Connections.Flight = RunService.RenderStepped:Connect(function()
+		if not Humanoid or not Humanoid.Parent or Humanoid.Health <= 0 or not Root.Parent then
+			Funcs:StopFlight()
+			return
+		end
+
+		Camera = workspace.CurrentCamera
+		Humanoid.PlatformStand = true
+
+		local c = Flight.ctrl
+		local Dir = Camera.CFrame.LookVector * (c.f + c.b)
+			+ Camera.CFrame.RightVector * (c.l + c.r)
+
+		bv.Velocity = Dir.Magnitude > 0 and Dir.Unit * Config.flightSpeed or Vector3.zero
+		bg.CFrame = Camera.CFrame
+	end)
+end
+
+function Funcs:ToggleFlight()
+	if Flight.active then
+		Funcs:StopFlight()
+	else
+		Funcs:StartFlight()
+	end
+end
+
+function Funcs:FlightEnabled(Value)
+	Config.flightEnabled = Value
+	if not Value then
+		Funcs:StopFlight()
+	end
+end
+
+local MoveKeys = {
+	[Enum.KeyCode.W] = { "f", 1 },
+	[Enum.KeyCode.S] = { "b", -1 },
+	[Enum.KeyCode.A] = { "l", -1 },
+	[Enum.KeyCode.D] = { "r", 1 },
+}
+
+UserInputService.InputBegan:Connect(function(Input, Processed)
+	if Processed then return end
+
+	if Input.KeyCode == Config.flightKey and Config.flightEnabled then
+		Funcs:ToggleFlight()
+		return
+	end
+
+	local Move = MoveKeys[Input.KeyCode]
+	if Move then
+		Flight.ctrl[Move[1]] = Move[2]
+	end
+end)
+
+UserInputService.InputEnded:Connect(function(Input)
+	local Move = MoveKeys[Input.KeyCode]
+	if Move then
+		Flight.ctrl[Move[1]] = 0
+	end
+end)
+
+
+-- Character / Misc Connections
+--
 LocalPlayer.CharacterAdded:Connect(function(Value)
+	Funcs:StopFlight()
+	Flight.ctrl = { f = 0, b = 0, l = 0, r = 0 }
+
 	Character = Value
 	Humanoid = Value:WaitForChild("Humanoid")
 	Humanoid.WalkSpeed = Config.walkSpeed
 	Humanoid.JumpPower = Config.jumpPower
 end)
 
-game:GetService("UserInputService").JumpRequest:Connect(function()
+UserInputService.JumpRequest:Connect(function()
 	if Config.infiniteJump and Humanoid and Humanoid.Parent then
 		Humanoid:ChangeState(Enum.HumanoidStateType.Jumping)
 	end
@@ -229,6 +354,7 @@ do
 	end
 end
 
+
 Lib = loadstring(game:HttpGet("https://raw.githubusercontent.com/guyjuju/sas-mate/refs/heads/main/ui.lua"))()
 local UI = Lib:Create("Sas Mate", "Lumber Tycoon 2", "https://nexushub.lol/api/cdn/Background.png")
 local Tab, Section
@@ -253,10 +379,10 @@ Section:Slider("Walk Speed", Config.walkSpeed, 16, 500, false, function(Value)
 
 			Connections.Walkspeed = Humanoid:GetPropertyChangedSignal("WalkSpeed"):Connect(function() -- when the walkspeed changes
 
-				if Humanoid and Humanoid.Parent and Humanoid.WalkSpeed ~= Config.walkSpeed then 
-					--/ if character exists and walkspeed isnt 
+				if Humanoid and Humanoid.Parent and Humanoid.WalkSpeed ~= Config.walkSpeed then
+					--/ if character exists and walkspeed isnt
 					--/ the expected then set it back to the expected value
-						
+
 					Humanoid.WalkSpeed = Config.walkSpeed;
 				end;
 
@@ -267,7 +393,7 @@ Section:Slider("Walk Speed", Config.walkSpeed, 16, 500, false, function(Value)
 end)
 
 
-Section:Slider("Jump Power", Config.jumpPower, 50, 500, false, function(Value)
+Section:Slider("Jump Power", Config.jumpPower, 50, 600, false, function(Value)
 	Config.jumpPower = Value
 	Funcs:JumpPower(Value)
 end)
@@ -279,6 +405,36 @@ end)
 
 
 -- [[ Section 2 ]]
+--
+Section = Tab:Section("Flight")
+
+Section:Slider("Flight Speed", Config.flightSpeed, 50, 500, false, function(Value)
+	Config.flightSpeed = Value
+end)
+
+
+Section:Toggle("Toggle Flight", Config.flightEnabled, function(Value)
+	Funcs:FlightEnabled(Value)
+end)
+
+
+-- NOTE: adjust this call to match your ui.lua KeyBind signature if needed.
+Section:KeyBind("Flight Key", "Q", function(Key)
+	-- Key may arrive as a string ("Q") or an Enum.KeyCode depending on the lib
+	if typeof(Key) == "EnumItem" then
+		Config.flightKey = Key
+	else
+		local Ok, Code = pcall(function()
+			return Enum.KeyCode[string.upper(tostring(Key))]
+		end)
+		if Ok and Code then
+			Config.flightKey = Code
+		end
+	end
+end)
+
+
+-- [[ Section 3 ]]
 --
 Section = Tab:Section("Camera")
 
