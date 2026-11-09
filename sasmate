@@ -37,6 +37,9 @@ local Config = {
 	clearFog      = false,
 	globalShadows = true,
 
+	-- World
+	timeMode      = nil, -- nil | "day" | "night"
+
 	-- Flight
 	flightEnabled = false, -- master toggle (allows the key to start/stop flying)
 	flightSpeed   = 150,
@@ -202,18 +205,34 @@ function Funcs:GlobalShadows(Value)
 end
 
 
-function Funcs:UIScale(Value)
-	local ScreenGui = game.CoreGui:FindFirstChild("SasMate")
-	local Main = ScreenGui and ScreenGui:FindFirstChild("Main")
-	if not Main then return end
+-- MARK: World Funcs
+--
 
-	local Scale = Main:FindFirstChildOfClass("UIScale")
-	if not Scale then
-		Scale = Instance.new("UIScale")
-		Scale.Parent = Main
+local TimeTargets = {
+	day   = 14, -- 2 PM
+	night = 0,  -- midnight
+}
+
+-- Sets the time of day and keeps it there until the mode is cleared
+function Funcs:SetTimeMode(Mode)
+	Config.timeMode = Mode
+
+	if Connections.TimeLock then
+		Connections.TimeLock:Disconnect()
+		Connections.TimeLock = nil
 	end
 
-	Scale.Scale = Value / 100
+	local Target = Mode and TimeTargets[Mode]
+	if not Target then return end
+
+	Lighting.ClockTime = Target
+
+	-- If the game tries to move the clock, put it back
+	Connections.TimeLock = Lighting:GetPropertyChangedSignal("ClockTime"):Connect(function()
+		if Config.timeMode and Lighting.ClockTime ~= TimeTargets[Config.timeMode] then
+			Lighting.ClockTime = TimeTargets[Config.timeMode]
+		end
+	end)
 end
 
 
@@ -552,10 +571,32 @@ Section:Toggle("Global Shadows", Config.globalShadows, function(Value)
 	Funcs:GlobalShadows(Value)
 end)
 
--- MARK: Wood Tab
---
 Tab = UI:Tab("Wood", "6022668898")
 
+-- MARK: World Tab
+--
+Tab = UI:Tab("World", "6034287594")
+
+-- [[ Section 1 ]]
+--
+Section = Tab:Section("Time")
+
+Section:Toggle("Set Day", false, function(Value)
+	if Value then
+		Funcs:SetTimeMode("day")
+	elseif Config.timeMode == "day" then
+		Funcs:SetTimeMode(nil)
+	end
+end)
+
+
+Section:Toggle("Set Night", false, function(Value)
+	if Value then
+		Funcs:SetTimeMode("night")
+	elseif Config.timeMode == "night" then
+		Funcs:SetTimeMode(nil)
+	end
+end)
 
 -- MARK: Credits Tab
 --
@@ -571,13 +612,6 @@ Section:Paragraph(" pov", " Helped make sas mate")
 Section:Paragraph(" soda", " runing discord")
 
 
-Section = Tab:Section("Interface")
-
-Section:Slider("UI Scale (%)", 100, 50, 150, false, function(Value)
-	Funcs:UIScale(Value)
-end)
-
-
 Section = Tab:Section("Mobile")
 
 Section:Toggle("UI Toggle", false, function(Value)
@@ -587,4 +621,3 @@ end)
 Section:Toggle("Fly Button", false, function(Value)
 	Funcs:FlyButton(Value)
 end)
-
