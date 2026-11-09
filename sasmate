@@ -41,6 +41,9 @@ local Config = {
 	-- World
 	timeMode      = nil, -- nil | "day" | "night"
 
+	-- Wood
+	treeCount     = 1,   -- how many trees to bring per click
+
 	-- Flight
 	flightEnabled = false, -- master toggle (allows the key to start/stop flying)
 	flightSpeed   = 150,
@@ -399,11 +402,11 @@ function Funcs:ChopTree(Tree, Axe, Stats, TreeClass)
 end
 
 -- Finds, chops and brings one tree of this wood type to where you stood
-function Funcs:BringTree(TreeClass)
+function Funcs:BringTree(TreeClass, HomeOverride)
 	local Root, Hum = GetRoot()
 	if not Root or not Hum then return false, "Character isn't loaded." end
 
-	local Home = Root.CFrame
+	local Home = HomeOverride or Root.CFrame
 	Funcs:StopFlight()
 	Hum:UnequipTools()
 	task.wait()
@@ -508,27 +511,54 @@ function Funcs:BringOnce(TreeClass)
 		return
 	end
 
+	local StartRoot = GetRoot()
+	if not StartRoot then
+		Funcs:Notify("Wood", "Character isn't loaded.")
+		return
+	end
+
 	Wood.running = true
 	Wood.active = TreeClass
 	Wood.returnPending = false
 
+	local Total = Config.treeCount
+	local Home = StartRoot.CFrame -- every log is dropped at the spot you started from
+
 	task.spawn(function()
-		local Ok, Success, Msg = pcall(Funcs.BringTree, Funcs, TreeClass)
-		if not Ok then
-			Success, Msg = false, tostring(Success)
+		local Done, Failure = 0, nil
+
+		for _ = 1, Total do
+			if Wood.active ~= TreeClass then break end -- Stop was pressed
+
+			local Ok, Success, Msg = pcall(Funcs.BringTree, Funcs, TreeClass, Home)
+			if not Ok then
+				Success, Msg = false, tostring(Success)
+			end
+
+			if not Success then
+				Failure = Msg
+				break
+			end
+
+			Done = Done + 1
+			task.wait(0.5)
 		end
+
+		local Stopped = Wood.returnPending
 
 		Wood.active = nil
 		Wood.running = false
 
-		if Wood.returnPending then
+		if Stopped then
 			-- Stop was pressed: go back to the base
 			Wood.returnPending = false
 			if not Funcs:ReturnToBase() then
 				Funcs:Notify("Wood", "Couldn't find your base.")
 			end
-		elseif not Success then
-			Funcs:Notify(TreeClass, Msg)
+		elseif Failure then
+			Funcs:Notify(TreeClass, Done .. "/" .. Total .. " brought. " .. Failure)
+		elseif Total > 1 then
+			Funcs:Notify(TreeClass, "Brought " .. Done .. "/" .. Total .. " trees.")
 		end
 	end)
 end
@@ -893,7 +923,12 @@ do
 	if #Classes == 0 then
 		Section:Paragraph(" No trees found", " Rejoin the server and re-run the script")
 	else
-		-- Click a wood type to bring ONE tree of it, then it stops
+		-- How many trees each click brings
+		Section:Slider("Trees to Bring", Config.treeCount, 1, 20, false, function(Value)
+			Config.treeCount = Value
+		end)
+
+		-- Click a wood type to bring that many trees of it, then it stops
 		Section:DropDown("Bring Wood", Classes, function(Value)
 			Funcs:BringOnce(Value)
 		end)
