@@ -202,6 +202,21 @@ function Funcs:GlobalShadows(Value)
 end
 
 
+function Funcs:UIScale(Value)
+	local ScreenGui = game.CoreGui:FindFirstChild("SasMate")
+	local Main = ScreenGui and ScreenGui:FindFirstChild("Main")
+	if not Main then return end
+
+	local Scale = Main:FindFirstChildOfClass("UIScale")
+	if not Scale then
+		Scale = Instance.new("UIScale")
+		Scale.Parent = Main
+	end
+
+	Scale.Scale = Value / 100
+end
+
+
 -- MARK: Flight Funcs
 --
 
@@ -554,6 +569,13 @@ Section:Paragraph(" JuJu", " Script Owner & Developer")
 Section:Paragraph(" q2", " Helped make sas mate")
 Section:Paragraph(" pov", " Helped make sas mate")
 Section:Paragraph(" soda", " runing discord")
+
+
+Section = Tab:Section("Interface")
+
+Section:Slider("UI Scale (%)", 100, 50, 150, false, function(Value)
+	Funcs:UIScale(Value)
+end)
 
 
 Section = Tab:Section("Mobile")
