@@ -914,24 +914,9 @@ do
 			table.insert(Options, Class)
 		end
 
-		local Ok = pcall(function()
-			Section:Dropdown("Wood Type", Options, "Off", function(Value)
-				Funcs:WoodSelect(Value)
-			end)
+		Section:DropDown("Wood Type", Options, function(Value)
+			Funcs:WoodSelect(Value)
 		end)
-
-		-- Fallback if the UI library has no Dropdown: one toggle per wood type
-		if not Ok then
-			for _, Class in ipairs(Classes) do
-				Section:Toggle(Class, false, function(Value)
-					if Value then
-						Funcs:WoodSelect(Class)
-					elseif Wood.active == Class then
-						Funcs:WoodSelect("Off")
-					end
-				end)
-			end
-		end
 	end
 end
 
