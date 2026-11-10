@@ -4,6 +4,7 @@
  \___ \ / _` \___ \   | |\/| |/ _` | __/ _ \
   ___) | (_| |___) |  | |  | | (_| | ||  __/
  |____/ \__,_|____/   |_|  |_|\__,_|\__\___| V1
+
                          a project by JuJu
                                     Nov. 2026,
 ]]
@@ -165,6 +166,7 @@ function Funcs:ProgressBar(Title, Steps)
 end
 
 
+-- MARK: Player Funcs
 --
 
 
@@ -264,6 +266,7 @@ function Funcs:GetTreeRegions()
 	return Regions
 end
 
+-- Every wood type that currently exists in the map
 function Funcs:GetTreeClasses()
 	local Classes = {}
 	for _, Region in ipairs(Funcs:GetTreeRegions()) do
@@ -296,7 +299,7 @@ function Funcs:GetAxeStats(AxeName, TreeClass)
 	return Stats
 end
 
-
+-- Highest damage axe in the backpack for this wood type
 function Funcs:GetBestAxe(TreeClass)
 	local Best, BestStats
 	for _, Tool in ipairs(LocalPlayer.Backpack:GetChildren()) do
@@ -324,6 +327,7 @@ local function GetModelMass(Model)
 	return Total, Sections
 end
 
+-- Heaviest unowned tree of the given wood type
 function Funcs:FindTree(TreeClass)
 	local Found = {}
 	for _, Region in ipairs(Funcs:GetTreeRegions()) do
@@ -346,6 +350,7 @@ function Funcs:FindTree(TreeClass)
 	return Found[1] and Found[1].Tree or nil
 end
 
+-- Needed for the LoneCave tree
 function Funcs:ResetRootJoint()
 	local Root = GetRoot()
 	local Joint = Root and Root:FindFirstChild("RootJoint")
@@ -356,6 +361,7 @@ function Funcs:ResetRootJoint()
 	end
 end
 
+-- Swings the axe until a log owned by you appears (or the toggle is switched off)
 function Funcs:ChopTree(Tree, Axe, Stats, TreeClass)
 	local Root = GetRoot()
 	local Section = Tree:FindFirstChild("WoodSection")
@@ -395,6 +401,7 @@ function Funcs:ChopTree(Tree, Axe, Stats, TreeClass)
 	return NewLog
 end
 
+-- Finds, chops and brings one tree of this wood type to where you stood
 function Funcs:BringTree(TreeClass, HomeOverride)
 	local Root, Hum = GetRoot()
 	if not Root or not Hum then return false, "Character isn't loaded." end
@@ -418,6 +425,7 @@ function Funcs:BringTree(TreeClass, HomeOverride)
 		Funcs:ResetRootJoint()
 	end
 
+	-- Keep you next to the tree while chopping
 	local Lock
 	if not LoneCave then
 		Lock = RunService.Heartbeat:Connect(function()
@@ -434,6 +442,7 @@ function Funcs:BringTree(TreeClass, HomeOverride)
 	if Lock then Lock:Disconnect() end
 	if not Log then return false, "Chop cancelled or timed out." end
 
+	-- Take network ownership of the log, then pin it to your old position
 	task.wait(0.15)
 	local Section = Log:FindFirstChild("WoodSection")
 	if not Section then return false, "Log has no wood section." end
@@ -453,6 +462,7 @@ function Funcs:BringTree(TreeClass, HomeOverride)
 		task.wait()
 	end
 
+	-- LoneCave: respawn so the log stays put
 	if LoneCave then
 		local _, H = GetRoot()
 		if H then H:UnequipTools() end
@@ -473,6 +483,7 @@ function Funcs:BringTree(TreeClass, HomeOverride)
 	return true, "Got the tree!"
 end
 
+-- Teleports you to the middle of your own base (property)
 function Funcs:ReturnToBase()
 	local Root = GetRoot()
 	local Properties = workspace:FindFirstChild("Properties")
@@ -490,6 +501,7 @@ function Funcs:ReturnToBase()
 	return false
 end
 
+-- Brings ONE tree of this wood type, then stops
 function Funcs:BringOnce(TreeClass)
 	if type(TreeClass) == "table" then TreeClass = TreeClass[1] end
 	if not TreeClass then return end
@@ -510,13 +522,13 @@ function Funcs:BringOnce(TreeClass)
 	Wood.returnPending = false
 
 	local Total = Config.treeCount
-	local Home = StartRoot.CFrame
+	local Home = StartRoot.CFrame -- every log is dropped at the spot you started from
 
 	task.spawn(function()
 		local Done, Failure = 0, nil
 
 		for _ = 1, Total do
-			if Wood.active ~= TreeClass then break end 
+			if Wood.active ~= TreeClass then break end -- Stop was pressed
 
 			local Ok, Success, Msg = pcall(Funcs.BringTree, Funcs, TreeClass, Home)
 			if not Ok then
@@ -538,6 +550,7 @@ function Funcs:BringOnce(TreeClass)
 		Wood.running = false
 
 		if Stopped then
+			-- Stop was pressed: go back to the base
 			Wood.returnPending = false
 			if not Funcs:ReturnToBase() then
 				Funcs:Notify("Wood", "Couldn't find your base.")
@@ -550,6 +563,7 @@ function Funcs:BringOnce(TreeClass)
 	end)
 end
 
+-- Cancels the current chop (if any) and teleports you to your base
 function Funcs:StopWood()
 	if Wood.running then
 		Wood.active = nil
@@ -560,8 +574,10 @@ function Funcs:StopWood()
 end
 
 
+-- MARK: Teleport Funcs
+--
 
--
+-- Coordinates taken from the old Lt2 Gui script
 local Locations = {
 	{ "WoodRus",     CFrame.new(265, 5, 57) },
 	{ "Spawn",       CFrame.new(155, 5, 74) },
@@ -573,6 +589,8 @@ local Locations = {
 	{ "Strange Man", CFrame.new(1061, 20, 1131) },
 	{ "The Den",     CFrame.new(323, 49, 1930) },
 }
+
+-- Always looks up your current character, so it still works after a respawn
 function Funcs:TeleportTo(Target)
 	local Root = GetRoot()
 	if not Root then return false end
@@ -580,6 +598,9 @@ function Funcs:TeleportTo(Target)
 	return true
 end
 
+
+-- MARK: Flight Funcs
+--
 
 function Funcs:StopFlight()
 	Flight.active = false
@@ -669,6 +690,7 @@ function Funcs:FlightEnabled(Value)
 	end
 end
 
+-- On-screen draggable fly button for mobile
 function Funcs:FlyButton(v)
 	if not v then
 		if Flight.gui then Flight.gui:Destroy() end
@@ -766,6 +788,7 @@ UserInputService.InputEnded:Connect(function(Input)
 end)
 
 
+-- Character / Misc Connections
 --
 LocalPlayer.CharacterAdded:Connect(function(Value)
 	Funcs:StopFlight()
@@ -791,6 +814,7 @@ workspace:GetPropertyChangedSignal("CurrentCamera"):Connect(function()
 end)
 
 
+-- MARK: UI Init
 --
 do
 	local HttpService = game:GetService("HttpService")
@@ -817,8 +841,12 @@ local UI = Lib:Create("Sas Mate", "Lumber Tycoon 2", "https://nexushub.lol/api/c
 local Tab, Section
 
 
+-- MARK: Player Tab
+--
 Tab = UI:Tab("Player", "5012544693")
 
+-- [[ Section 1 ]]
+--
 Section = Tab:Section("Movement")
 
 
@@ -857,6 +885,7 @@ Section:Toggle("Infinite Jump", Config.infiniteJump, function(Value)
 end)
 
 
+-- [[ Section 2 ]]
 --
 Section = Tab:Section("Flight")
 
@@ -870,6 +899,7 @@ Section:Toggle("Toggle Flight", Config.flightEnabled, function(Value)
 end)
 
 
+-- ui.lua's KeyBind fires this callback whenever the bound key is pressed
 Section:KeyBind("Flight Key", "Q", function()
 	if Config.flightEnabled then
 		Funcs:ToggleFlight()
@@ -877,6 +907,8 @@ Section:KeyBind("Flight Key", "Q", function()
 end)
 
 
+-- [[ Section 3 ]]
+--
 Section = Tab:Section("Camera")
 
 Section:Slider("Zoom Distance", Config.zoomDistance, 10, 1000, false, function(Value)
@@ -902,9 +934,12 @@ Section:Toggle("Global Shadows", Config.globalShadows, function(Value)
 	Funcs:GlobalShadows(Value)
 end)
 
+-- MARK: Wood Tab
 --
 Tab = UI:Tab("Wood", "6022668898")
 
+-- [[ Section 1 ]]
+--
 Section = Tab:Section("Auto Bring Wood")
 
 do
@@ -912,12 +947,13 @@ do
 
 	if #Classes == 0 then
 		Section:Paragraph(" No trees found", " Rejoin the server and re-run the script")
-	end)
+	else
+		-- How many trees each click brings
 		Section:Slider("Trees to Bring", Config.treeCount, 1, 20, false, function(Value)
 			Config.treeCount = Value
 		end)
 
-		
+		-- Click a wood type to bring that many trees of it, then it stops
 		Section:DropDown("Bring Wood", Classes, function(Value)
 			Funcs:BringOnce(Value)
 		end)
@@ -928,9 +964,12 @@ do
 	end
 end
 
+-- MARK: World Tab
 --
 Tab = UI:Tab("World", "6034287594")
 
+-- [[ Section 1 ]]
+--
 Section = Tab:Section("Time")
 
 Section:Toggle("Set Day", false, function(Value)
@@ -950,7 +989,8 @@ Section:Toggle("Set Night", false, function(Value)
 	end
 end)
 
-
+-- [[ Section 2 ]]
+--
 Section = Tab:Section("Teleports")
 
 do
@@ -960,6 +1000,7 @@ do
 		Targets[Location[1]] = Location[2]
 	end
 
+	-- Pick a spot and you're teleported there right away
 	Section:DropDown("Teleport To", Spots, function(Value)
 		if Value == "Your Base" then
 			if not Funcs:ReturnToBase() then
@@ -971,9 +1012,12 @@ do
 	end)
 end
 
+-- MARK: Credits Tab
 --
 Tab = UI:Tab("Settings", "6031280882")
 
+-- [[ Section 1 ]]
+--
 Section = Tab:Section("Contributors")
 
 Section:Paragraph(" JuJu", " Script Owner & Developer")
