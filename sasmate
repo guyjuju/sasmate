@@ -197,17 +197,34 @@ end
 
 local DefaultFog = {
 	FogEnd = Lighting.FogEnd,
-	FogStart = Lighting.FogStart,
+	FogColor = Lighting.FogColor,
+	OutdoorAmbient = Lighting.OutdoorAmbient,
 }
 
+local SavedTints = {}
 
 function Funcs:ClearFog(Value)
 	if Value then
-		Lighting.FogEnd = 1000000
-		Lighting.FogStart = 1000000
+		Lighting.FogEnd = 100000
+		Lighting.FogColor = Color3.fromRGB(255, 255, 255)
+		Lighting.OutdoorAmbient = Color3.fromRGB(255, 255, 255)
+		local Correction = Lighting:FindFirstChildOfClass("ColorCorrectionEffect")
+		if Correction then
+			if SavedTints[Correction] == nil then
+				SavedTints[Correction] = Correction.TintColor
+			end
+			Correction.TintColor = Color3.fromRGB(255, 255, 255)
+		end
 	else
 		Lighting.FogEnd = DefaultFog.FogEnd
-		Lighting.FogStart = DefaultFog.FogStart
+		Lighting.FogColor = DefaultFog.FogColor
+		Lighting.OutdoorAmbient = DefaultFog.OutdoorAmbient
+		for Correction, Tint in pairs(SavedTints) do
+			if Correction.Parent then
+				Correction.TintColor = Tint
+			end
+			SavedTints[Correction] = nil
+		end
 	end
 end
 
@@ -225,6 +242,8 @@ local TimeTargets = {
 	night = 0,  -- midnight
 }
 
+local DefaultClock = Lighting.ClockTime
+
 -- Sets the time of day and keeps it there until the mode is cleared
 function Funcs:SetTimeMode(Mode)
 	Config.timeMode = Mode
@@ -235,7 +254,10 @@ function Funcs:SetTimeMode(Mode)
 	end
 
 	local Target = Mode and TimeTargets[Mode]
-	if not Target then return end
+	if not Target then
+		Lighting.ClockTime = DefaultClock
+		return
+	end
 
 	Lighting.ClockTime = Target
 
@@ -255,6 +277,8 @@ local function GetRoot()
 	local Char = LocalPlayer.Character
 	return Char and Char:FindFirstChild("HumanoidRootPart"), Char and Char:FindFirstChildOfClass("Humanoid")
 end
+
+local TakeControl, Drag
 
 function Funcs:GetTreeRegions()
 	local Regions = {}
@@ -299,29 +323,81 @@ function Funcs:GetAxeStats(AxeName, TreeClass)
 	return Stats
 end
 
--- Highest damage axe in the backpack for this wood type
 function Funcs:GetBestAxe(TreeClass)
+	local Required = TreeClass == "LoneCave" and "EndTimesAxe" or nil
 	local Best, BestStats
-	for _, Tool in ipairs(LocalPlayer.Backpack:GetChildren()) do
+	local function Consider(Tool)
+		if not Tool:IsA("Tool") or Tool.Name == "BlueprintTool" then return end
 		local ToolName = Tool:FindFirstChild("ToolName")
-		if Tool.Name ~= "BlueprintTool" and ToolName then
-			local Stats = Funcs:GetAxeStats(ToolName.Value, TreeClass)
-			if Stats and (not BestStats or Stats.Damage > BestStats.Damage) then
-				Best, BestStats = Tool, Stats
+		if not ToolName then return end
+		if Required and ToolName.Value ~= Required then return end
+		local Stats = Funcs:GetAxeStats(ToolName.Value, TreeClass)
+		if Stats and (not BestStats or Stats.Damage > BestStats.Damage) then
+			Best, BestStats = Tool, Stats
+		end
+	end
+	for _, Tool in ipairs(LocalPlayer.Backpack:GetChildren()) do
+		Consider(Tool)
+	end
+	local Held = LocalPlayer.Character and LocalPlayer.Character:FindFirstChildOfClass("Tool")
+	if Held then
+		Consider(Held)
+	end
+	return Best, BestStats
+end
+
+local function CountAxes()
+	local Count = 0
+	for _, Tool in ipairs(LocalPlayer.Backpack:GetChildren()) do
+		if Tool:IsA("Tool") then
+			Count = Count + 1
+		end
+	end
+	return Count
+end
+
+function Funcs:PickUpBetterAxe(TreeClass, BestDamage)
+	local Required = TreeClass == "LoneCave" and "EndTimesAxe" or nil
+	local Best, BestValue = nil, BestDamage or 0
+	for _, Model in ipairs(workspace.PlayerModels:GetChildren()) do
+		local ToolName = Model:FindFirstChild("ToolName")
+		local Owner = Model:FindFirstChild("Owner")
+		if ToolName and Owner and Owner.Value == LocalPlayer then
+			if not (Required and ToolName.Value ~= Required) then
+				local Stats = Funcs:GetAxeStats(ToolName.Value, TreeClass)
+				if Stats and Stats.Damage > BestValue then
+					Best, BestValue = Model, Stats.Damage
+				end
 			end
 		end
 	end
-	return Best, BestStats
+	if not Best then return false end
+	local Before = CountAxes()
+	ReplicatedStorage.Interaction.ClientInteracted:FireServer(Best, "Pick up tool")
+	task.wait(0.5)
+	if CountAxes() > Before then return true end
+	ReplicatedStorage.Interaction.ClientInteracted:FireServer(Best, "Pick up tool")
+	task.wait(0.5)
+	return CountAxes() > Before
+end
+
+function Funcs:EnsureBestAxe(TreeClass)
+	local Axe, Stats = Funcs:GetBestAxe(TreeClass)
+	local Carried = Stats and Stats.Damage or 0
+	if Funcs:PickUpBetterAxe(TreeClass, Carried) then
+		Axe, Stats = Funcs:GetBestAxe(TreeClass)
+	end
+	return Axe, Stats
 end
 
 local function GetModelMass(Model)
 	local Total, Sections = 0, 0
 	for _, Part in ipairs(Model:GetDescendants()) do
-		if Part:IsA("BasePart") and Part.Name ~= "Leaves" then
+		if Part:IsA("BasePart") then
 			if Part.Name == "WoodSection" then
 				Sections = Sections + 1
 			end
-			Total = Total + Part.Mass
+			Total = Total + Part:GetMass()
 		end
 	end
 	return Total, Sections
@@ -350,7 +426,6 @@ function Funcs:FindTree(TreeClass)
 	return Found[1] and Found[1].Tree or nil
 end
 
--- Needed for the LoneCave tree
 function Funcs:ResetRootJoint()
 	local Root = GetRoot()
 	local Joint = Root and Root:FindFirstChild("RootJoint")
@@ -363,18 +438,19 @@ end
 
 -- Swings the axe until a log owned by you appears (or the toggle is switched off)
 function Funcs:ChopTree(Tree, Axe, Stats, TreeClass)
-	local Root = GetRoot()
+	local Root, Hum = GetRoot()
 	local Section = Tree:FindFirstChild("WoodSection")
-	if not Root or not Section then return nil end
+	if not Root or not Hum or not Section then return nil end
 
 	Root.CFrame = CFrame.new(Section.Position + Vector3.new(5, 0, 0))
 	task.wait(0.25)
 
+	local SectionId = Section:FindFirstChild("ID")
 	local Props = {
 		tool         = Axe,
 		height       = 0.3,
 		faceVector   = Vector3.new(1, 0, 0),
-		sectionId    = 1,
+		sectionId    = SectionId and SectionId.Value or 1,
 		hitPoints    = Stats.Damage,
 		cooldown     = Stats.SwingCooldown,
 		cuttingClass = "Axe",
@@ -392,7 +468,7 @@ function Funcs:ChopTree(Tree, Axe, Stats, TreeClass)
 	local Remote = ReplicatedStorage.Interaction.RemoteProxy
 	local Started = os.clock()
 
-	while not NewLog and Wood.active == TreeClass and Tree.Parent and os.clock() - Started < 60 do
+	while not NewLog and Wood.active == TreeClass and Tree.Parent and Hum.Parent and Hum.Health > 0 and os.clock() - Started < 60 do
 		Remote:FireServer(Tree.CutEvent, Props)
 		task.wait(Stats.SwingCooldown)
 	end
@@ -404,63 +480,48 @@ end
 -- Finds, chops and brings one tree of this wood type to where you stood
 function Funcs:BringTree(TreeClass, HomeOverride)
 	local Root, Hum = GetRoot()
-	if not Root or not Hum then return false, "Character isn't loaded." end
+	if not Root or not Hum then return false, "your character isn't loaded" end
 
 	local Home = HomeOverride or Root.CFrame
 	Funcs:StopFlight()
 	Hum:UnequipTools()
 	task.wait()
 
-	local Axe, Stats = Funcs:GetBestAxe(TreeClass)
-	if not Axe then return false, "Pick up an axe first." end
+	local Axe, Stats = Funcs:EnsureBestAxe(TreeClass)
+	if not Axe then return false, "You need an axe for this" end
 
 	local Tree = Funcs:FindTree(TreeClass)
-	if not Tree then return false, "No free " .. TreeClass .. " tree found." end
+	if not Tree then return false, "No " .. TreeClass .. " trees are left" end
 
 	local LoneCave = TreeClass == "LoneCave"
 	if LoneCave then
 		if Axe.ToolName.Value ~= "EndTimesAxe" then
-			return false, "You need the End Times Axe for this tree."
+			return false, "You need an EndTimes axe to cut the LoneCave tree"
 		end
 		Funcs:ResetRootJoint()
-	end
-
-	-- Keep you next to the tree while chopping
-	local Lock
-	if not LoneCave then
-		Lock = RunService.Heartbeat:Connect(function()
-			local R = GetRoot()
-			local S = Tree:FindFirstChild("WoodSection")
-			if R and S then
-				R.CFrame = CFrame.new(S.Position + Vector3.new(5, 3, 0))
-			end
-		end)
+		if Axe.Parent ~= LocalPlayer.Character then
+			Hum:EquipTool(Axe)
+			task.wait(0.3)
+		end
 	end
 
 	local Log = Funcs:ChopTree(Tree, Axe, Stats, TreeClass)
+	if not Log then return false, "Tree cutting stopped" end
 
-	if Lock then Lock:Disconnect() end
-	if not Log then return false, "Chop cancelled or timed out." end
-
-	-- Take network ownership of the log, then pin it to your old position
 	task.wait(0.15)
 	local Section = Log:FindFirstChild("WoodSection")
-	if not Section then return false, "Log has no wood section." end
+	if not Section then return false, "Log has no wood section" end
 
-	task.spawn(function()
-		for _ = 1, 60 do
-			ReplicatedStorage.Interaction.ClientIsDragging:FireServer(Log)
-			task.wait()
-		end
-	end)
-
-	task.wait(0.1)
 	Log.PrimaryPart = Section
+	Wood.haul = Log
+	TakeControl(Log, Section, 6, function() return Wood.active == TreeClass end)
 	for _ = 1, 60 do
-		Log.PrimaryPart.Velocity = Vector3.new(0, 0, 0)
+		if Wood.active ~= TreeClass then return false end
+		Drag(Log)
 		Log:PivotTo(Home)
 		task.wait()
 	end
+	Wood.haul = nil
 
 	-- LoneCave: respawn so the log stays put
 	if LoneCave then
@@ -507,13 +568,18 @@ function Funcs:BringOnce(TreeClass)
 	if not TreeClass then return end
 
 	if Wood.running then
-		Funcs:Notify("Wood", "Already bringing a tree. Press Stop first.")
+		Funcs:Notify("Trees", "Already cutting a tree")
 		return
 	end
 
 	local StartRoot = GetRoot()
 	if not StartRoot then
-		Funcs:Notify("Wood", "Character isn't loaded.")
+		Funcs:Notify("Trees", "Tree cutting stopped: your character isn't loaded")
+		return
+	end
+
+	if not Funcs:EnsureBestAxe(TreeClass) then
+		Funcs:Notify("Trees", "You need an axe for this")
 		return
 	end
 
@@ -550,15 +616,28 @@ function Funcs:BringOnce(TreeClass)
 		Wood.running = false
 
 		if Stopped then
-			-- Stop was pressed: go back to the base
 			Wood.returnPending = false
-			if not Funcs:ReturnToBase() then
-				Funcs:Notify("Wood", "Couldn't find your base.")
+			local RootNow = GetRoot()
+			if RootNow then
+				RootNow.CFrame = Home
+				local Haul = Wood.haul
+				Wood.haul = nil
+				if Haul and Haul.Parent then
+					local Part = Haul:FindFirstChild("WoodSection") or Haul:FindFirstChildWhichIsA("BasePart", true)
+					if Part then
+						TakeControl(Haul, Part, 3)
+						Haul:PivotTo(Home)
+					end
+				end
 			end
 		elseif Failure then
-			Funcs:Notify(TreeClass, Done .. "/" .. Total .. " brought. " .. Failure)
-		elseif Total > 1 then
-			Funcs:Notify(TreeClass, "Brought " .. Done .. "/" .. Total .. " trees.")
+			if Failure == "Tree cutting stopped" then
+				Funcs:Notify("Trees", Failure)
+			else
+				Funcs:Notify("Trees", "Tree cutting stopped: " .. Failure)
+			end
+		else
+			Funcs:Notify("Trees", string.format("Got %d tree(s)", Done))
 		end
 	end)
 end
@@ -569,47 +648,265 @@ function Funcs:StopWood()
 		Wood.active = nil
 		Wood.returnPending = true
 	elseif not Funcs:ReturnToBase() then
-		Funcs:Notify("Wood", "Couldn't find your base.")
+		Funcs:Notify("Land", "Couldn't find the plot")
 	end
 end
 
 
--- MARK: Auto Buy Funcs
---
 
--- Store ids used by the shop NPCs (keyed by the store model's name)
-local ShopIds = {
-	WoodRUs        = 7,
-	CarStore       = 9,
-	FurnitureStore = 8,
-	ShackShop      = 10,
-	LogicStore     = 12,
-	FineArt        = 11,
-}
-
--- Auto Buy runtime state
 local Buy = {
 	running = false,
 	abort   = false,
-	item    = nil, -- selected dropdown label
+	item    = nil,
 	amount  = 1,
-	debug   = true, -- step-by-step notifications (toggle in the Auto Buy tab)
 	items   = {},  -- ["Item - $Price"] = { Box = "BoxItemName", Price = number }
 }
 
 local function GetMoney()
+	local Funds = ReplicatedStorage:FindFirstChild("Transactions")
+	local Remote = Funds and Funds:FindFirstChild("ClientToServer")
+	local Getter = Remote and Remote:FindFirstChild("GetFunds")
+	if Getter then
+		local Ok, Value = pcall(function()
+			return Getter:InvokeServer(LocalPlayer)
+		end)
+		if Ok and tonumber(Value) then
+			return tonumber(Value)
+		end
+	end
 	local Stats = LocalPlayer:FindFirstChild("leaderstats")
 	local Money = Stats and Stats:FindFirstChild("Money")
 	return Money and Money.Value or 0
 end
 
-local function Debug(Message)
-	if Buy.debug then
-		Funcs:Notify("Auto Buy", Message)
+local function CanCheckOwnership()
+	return typeof(gethiddenproperty) == "function" or typeof(isnetworkowner) == "function" or typeof(is_network_owner) == "function"
+end
+
+local function IsNetworkOwner(Part)
+	if not CanCheckOwnership() then
+		return false
+	end
+	if not (Part and Part:IsDescendantOf(workspace)) then
+		return false
+	end
+	local Ok, Owner = pcall(gethiddenproperty, Part, "NetworkOwnerV3")
+	if Ok and Owner == LocalPlayer then
+		return true
+	end
+	local Check = isnetworkowner or is_network_owner
+	if type(Check) ~= "function" then
+		return false
+	end
+	local Checked, Owns = pcall(Check, Part.AssemblyRootPart or Part)
+	return Checked and Owns == true
+end
+
+function TakeControl(Model, Part, Timeout, KeepGoing)
+	local Deadline = os.clock() + (Timeout or 6)
+	local Tick = Model and Model:FindFirstChild("LastInteraction", true)
+	local Baseline = Tick and Tick.Value or 0
+	repeat
+		if KeepGoing and not KeepGoing() then
+			return false
+		end
+		pcall(function()
+			ReplicatedStorage.Interaction.ClientIsDragging:FireServer(Model)
+		end)
+		if IsNetworkOwner(Part) then
+			return true
+		end
+		Tick = Model and Model:FindFirstChild("LastInteraction", true)
+		if Tick and Tick.Value > Baseline then
+			return true
+		end
+		task.wait(0.2)
+	until os.clock() > Deadline or not (Model and Model.Parent)
+	return IsNetworkOwner(Part)
+end
+
+local function NormName(Value)
+	return tostring(Value):gsub("%s+", ""):lower()
+end
+
+-- MARK: AutoBuy Funcs
+local CashierIds = {}
+
+local CashierTimeouts = {
+	collect = 20,
+	toggleGap = 4,
+	attempts = 3,
+	guessIds = 20,
+	guessTimeout = 25,
+	checkoutTimeout = 8,
+}
+
+function Drag(Model)
+	pcall(function()
+		ReplicatedStorage.Interaction.ClientIsDragging:FireServer(Model)
+	end)
+end
+
+local function RoundTrip()
+	pcall(function()
+		local Ping = ReplicatedStorage:FindFirstChild("TestPing")
+		if not Ping then return end
+		if Ping:IsA("RemoteFunction") then
+			Ping:InvokeServer()
+		else
+			Ping:FireServer()
+		end
+	end)
+end
+
+local function AcquireNetworkOwnership(Target, Sections, Timeout)
+	local Targets = Target
+	if typeof(Targets) == "Instance" then
+		Targets = { Targets }
+	end
+	local Deadline = os.clock() + (Timeout or 30)
+	local Initial = {}
+	for _, Item in ipairs(Targets) do
+		local Last = Item:FindFirstChild("LastInteraction", true)
+		Initial[Item] = Last and Last.Value
+	end
+	repeat
+		local AllOwned = true
+		for _, Item in ipairs(Targets) do
+			if not Item.Parent then
+				return false, "Target no longer exists"
+			end
+			local Parts = Sections or { Item.PrimaryPart or Item:FindFirstChildWhichIsA("BasePart", true) or Item }
+			local Owned = true
+			for _, Part in ipairs(Parts) do
+				if Part.Parent and not IsNetworkOwner(Part) then
+					Owned = false
+					break
+				end
+			end
+			if (not Owned or not CanCheckOwnership()) and not Sections then
+				local Last = Item:FindFirstChild("LastInteraction", true)
+				Owned = Last ~= nil and Initial[Item] ~= nil and Last.Value > Initial[Item]
+			end
+			if not Owned then
+				AllOwned = false
+				Drag(Item)
+			end
+		end
+		if AllOwned then
+			RoundTrip()
+			return true
+		end
+		task.wait()
+	until Buy.abort or os.clock() > Deadline
+	return false, "Ownership timed out"
+end
+
+local function CashierFile()
+	local Server = (game.JobId ~= "" and game.JobId) or tostring(game.PlaceId)
+	return "SasMate/cashierIds_" .. Server .. ".json", Server
+end
+
+local function LoadCashierIds()
+	if typeof(readfile) ~= "function" then return end
+	local File, Server = CashierFile()
+	local Ok, Data = pcall(readfile, File)
+	if not Ok or type(Data) ~= "string" then return end
+	local Ok2, Saved = pcall(function()
+		return game:GetService("HttpService"):JSONDecode(Data)
+	end)
+	if Ok2 and type(Saved) == "table" and Saved.server == Server and type(Saved.ids) == "table" then
+		for Name, Id in pairs(Saved.ids) do
+			if CashierIds[Name] == nil and tonumber(Id) then
+				CashierIds[Name] = tonumber(Id)
+			end
+		end
 	end
 end
 
--- Every non-blueprint item currently sitting in the shops, as "Name - $Price"
+local function SaveCashierIds()
+	if typeof(writefile) ~= "function" then return end
+	if typeof(makefolder) == "function" then
+		pcall(makefolder, "SasMate")
+	end
+	local File, Server = CashierFile()
+	pcall(writefile, File, game:GetService("HttpService"):JSONEncode({ server = Server, ids = CashierIds }))
+end
+
+local function RecordCashierIds(...)
+	for _, Payload in ipairs({ ... }) do
+		local Id = typeof(Payload) == "table" and tonumber(Payload.ID)
+		local Name = Id and Payload.Name
+		if typeof(Name) == "Instance" then
+			Name = Name.Name
+		end
+		if Id and type(Name) == "string" and CashierIds[Name] ~= Id then
+			CashierIds[Name] = Id
+			SaveCashierIds()
+		end
+	end
+end
+
+local function HookCashierIds()
+	local Folder = ReplicatedStorage:FindFirstChild("NPCDialog")
+	local Prompt = Folder and Folder:FindFirstChild("PromptChat")
+	if not Prompt then return end
+	Prompt.OnClientEvent:Connect(function(...)
+		RecordCashierIds(...)
+	end)
+end
+
+local function SetChatting(Value)
+	local Folder = ReplicatedStorage:FindFirstChild("NPCDialog")
+	local Remote = Folder and Folder:FindFirstChild("SetChattingValue")
+	if not Remote then return false end
+	if Remote:IsA("RemoteEvent") then
+		pcall(function() Remote:FireServer(Value) end)
+		return true
+	elseif Remote:IsA("RemoteFunction") then
+		pcall(function() Remote:InvokeServer(Value) end)
+		return true
+	end
+	return false
+end
+
+local function FetchCashierId(CashierName)
+	if CashierIds[CashierName] then return true end
+	local Started, LastToggle = os.clock(), 0
+	repeat
+		if os.clock() - LastToggle >= CashierTimeouts.toggleGap then
+			LastToggle = os.clock()
+			SetChatting(0)
+			task.wait(0.2)
+			SetChatting(1)
+		end
+		task.wait(0.1)
+	until CashierIds[CashierName] or os.clock() - Started > CashierTimeouts.collect
+	SetChatting(0)
+	if not CashierIds[CashierName] then
+		return false
+	end
+	return true
+end
+
+local function AskForCashierId(Npc)
+	local Head = Npc and (Npc:FindFirstChild("Head") or Npc.PrimaryPart)
+	if not Head then
+		return Npc and Npc.Name .. " has no head to stand next to" or "no keeper"
+	end
+	for _ = 1, CashierTimeouts.attempts do
+		if CashierIds[Npc.Name] then break end
+		Funcs:TeleportTo(CFrame.new(Head.Position + Vector3.new(4, 3, 4)))
+		task.wait(0.3)
+		FetchCashierId(Npc.Name)
+		SetChatting(1)
+	end
+	return nil
+end
+
+LoadCashierIds()
+HookCashierIds()
+
 function Funcs:GetShopItems()
 	local Names = {}
 	Buy.items = {}
@@ -641,7 +938,6 @@ function Funcs:GetShopItems()
 	return Names
 end
 
--- The shop counter closest to you
 function Funcs:GetStoreCounter()
 	local Char = LocalPlayer.Character
 	local Head = Char and Char:FindFirstChild("Head")
@@ -663,8 +959,8 @@ function Funcs:GetStoreCounter()
 	return Best
 end
 
--- Waits (up to Timeout seconds) for an unowned shop box with this BoxItemName
 function Funcs:FindShopBox(BoxName, Timeout)
+	local Wanted = tostring(BoxName):gsub("%s+", ""):lower()
 	local Started = os.clock()
 	repeat
 		local Stores = workspace:FindFirstChild("Stores")
@@ -674,7 +970,7 @@ function Funcs:FindShopBox(BoxName, Timeout)
 					for _, Box in ipairs(Store:GetChildren()) do
 						local Owner = Box:FindFirstChild("Owner")
 						local Name = Box:FindFirstChild("BoxItemName")
-						if Owner and Owner.Value == nil and Name and tostring(Name.Value) == BoxName then
+						if Owner and (Owner.Value == nil or Owner.Value == LocalPlayer) and Name and NormName(Name.Value) == Wanted then
 							return Box
 						end
 					end
@@ -686,7 +982,6 @@ function Funcs:FindShopBox(BoxName, Timeout)
 	return nil
 end
 
--- Finds the shop clerk standing at this counter
 function Funcs:GetStoreNpc(Counter)
 	local Best, BestDist
 	for _, Obj in ipairs(Counter.Parent:GetDescendants()) do
@@ -703,7 +998,6 @@ function Funcs:GetStoreNpc(Counter)
 	return Best
 end
 
--- Talks to a shop NPC: Response is "Initiate" to start the chat, "ConfirmPurchase" to buy
 function Funcs:TalkToNpc(Id, Npc, Response)
 	local Remote = ReplicatedStorage.NPCDialog.PlayerChatted
 	local Dialog = { ID = Id, Character = Npc, Name = Npc and Npc.Name }
@@ -713,74 +1007,108 @@ function Funcs:TalkToNpc(Id, Npc, Response)
 	end)
 end
 
--- Buys ONE box: walks to it, puts it on the counter, talks to the clerk,
--- confirms the purchase, then either opens it (blueprints) or drops it at Home
 function Funcs:BuyBox(BoxName, OpenBox, Home)
-	local Box = Funcs:FindShopBox(BoxName, 10)
-	if not Box then return false, "Couldn't find " .. BoxName .. " in the shop." end
-
-	local Main = Box:FindFirstChild("Main")
-	local Root = GetRoot()
-	if not Main or not Root then return false, "Character isn't loaded." end
-
-	Debug("Found " .. BoxName .. ".")
-
-	if (Root.Position - Main.Position).Magnitude > 25 then
-		Funcs:TeleportTo(CFrame.new(Main.Position + Vector3.new(5, 1, 5)))
-		task.wait(0.2)
-	end
-
 	local Counter = Funcs:GetStoreCounter()
-	local StoreId = Counter and ShopIds[Counter.Parent.Name]
-	if not StoreId then
-		return false, "Couldn't find the store counter" .. (Counter and (" (unknown store " .. Counter.Parent.Name .. ").") or ".")
+	if not Counter then
+		return false, "no counter nearby"
 	end
 
-	-- Stand next to the counter so the clerk can hear you
-	Root = GetRoot()
+	local Npc = Funcs:GetStoreNpc(Counter)
+	if not Npc then
+		return false, "Couldn't find the store clerk"
+	end
+
+	local StoreId = CashierIds[Npc.Name]
+	if not StoreId then
+		AskForCashierId(Npc)
+		StoreId = CashierIds[Npc.Name]
+	end
+
+	local Root = GetRoot()
 	if Root and (Root.Position - Counter.Position).Magnitude > 12 then
 		Funcs:TeleportTo(CFrame.new(Counter.Position + Vector3.new(5, 3, 5)))
 		task.wait(0.2)
 	end
 
-	local Drag = ReplicatedStorage.Interaction.ClientIsDragging
-
-	-- Put the item on the counter
-	for _ = 1, 25 do
-		Drag:FireServer(Box)
-		Box:PivotTo(Counter.CFrame + Vector3.new(0, Counter.Size.Y / 2 + Main.Size.Y / 2 + 0.5, 0))
-		task.wait()
-	end
-	Debug("Item is on the counter.")
-
-	-- Talk to the clerk first, then confirm
-	local Npc = Funcs:GetStoreNpc(Counter)
-	Debug("Talking to " .. (Npc and Npc.Name or "the clerk") .. " (store " .. StoreId .. ").")
-	local InitOk, InitResult = Funcs:TalkToNpc(StoreId, Npc, "Initiate")
-	Debug("Initiate -> " .. tostring(InitOk) .. ", " .. tostring(InitResult))
-	task.wait(0.5)
-
-	-- Confirm the purchase until the box leaves the shop
-	local Logged = false
-	local Started = os.clock()
-	repeat
-		Drag:FireServer(Box)
-		task.spawn(function()
-			local Ok, Result = Funcs:TalkToNpc(StoreId, Npc, "ConfirmPurchase")
-			if not Logged then
-				Logged = true
-				Debug("ConfirmPurchase -> " .. tostring(Ok) .. ", " .. tostring(Result))
+	local Guessing = (StoreId == nil)
+	local Candidates, Guess, LastTry, DialogId = {}, 0, nil, StoreId
+	if Guessing then
+		local Taken = {}
+		for _, Known in pairs(CashierIds) do
+			Taken[Known] = true
+		end
+		for Id = 1, CashierTimeouts.guessIds do
+			if not Taken[Id] then
+				table.insert(Candidates, Id)
 			end
-		end)
-		task.wait(0.1)
-	until Buy.abort or not Box.Parent or Box.Parent.Name ~= "ShopItems" or os.clock() - Started > 15
-
-	if Buy.abort then return false, "Aborted." end
-	if Box.Parent and Box.Parent.Name == "ShopItems" then
-		return false, "The clerk didn't accept the purchase (turn on Debug Messages to see why)."
+		end
+	else
+		Funcs:TalkToNpc(StoreId, Npc, "Initiate")
+		task.wait(0.5)
 	end
-	Debug("Purchased.")
 
+	local Box, Main, Bought, Reason = nil, nil, false, nil
+	for _ = 1, 3 do
+		if Buy.abort then break end
+		Box = Funcs:FindShopBox(BoxName, 5)
+		if not Box then
+			Reason = "not on the shelf"
+		else
+			Main = Box:FindFirstChild("Main")
+			Root = GetRoot()
+			if Main and Root then
+				if (Root.Position - Main.Position).Magnitude > 25 then
+					Funcs:TeleportTo(CFrame.new(Main.Position + Vector3.new(5, 1, 5)))
+					task.wait(0.2)
+				end
+				local Owned, Why = AcquireNetworkOwnership(Box, { Main }, 6)
+				if not Owned then
+					Reason = Why
+				else
+					local Spot = Counter.CFrame + Vector3.new(0, Counter.Size.Y / 2 + Main.Size.Y / 2 + 0.5, 0)
+					for _ = 1, 25 do
+						Drag(Box)
+						Box:PivotTo(Spot)
+						task.wait()
+					end
+					if (Main.Position - Spot.Position).Magnitude > 8 then
+						Reason = "couldn't place it on the counter"
+					else
+						local Started = os.clock()
+						local Budget = Guessing and CashierTimeouts.guessTimeout or CashierTimeouts.checkoutTimeout
+						while not Buy.abort and Box.Parent and Box.Parent.Name == "ShopItems" and os.clock() - Started < Budget do
+							Drag(Box)
+							if Guessing then
+								Guess = Guess + 1
+								LastTry = Candidates[Guess]
+								if not LastTry then break end
+								DialogId = LastTry
+							end
+							Funcs:TalkToNpc(DialogId, Npc, "ConfirmPurchase")
+							task.wait(Guessing and 0.2 or 0.1)
+						end
+						if not Box.Parent or Box.Parent.Name ~= "ShopItems" then
+							Bought = true
+							Reason = nil
+							if Guessing and LastTry then
+								CashierIds[Npc.Name] = LastTry
+								SaveCashierIds()
+							end
+						else
+							Reason = "checkout timed out"
+						end
+					end
+				end
+			else
+				Reason = "your character isn't loaded"
+			end
+		end
+		if Bought or Buy.abort then break end
+		task.wait(1.5)
+	end
+
+	if Buy.abort then return false, "it was stopped" end
+	if not Bought then return false, Reason or "checkout timed out" end
 	if OpenBox then
 		local Opened = os.clock()
 		while Box.Parent and not Buy.abort and os.clock() - Opened < 10 do
@@ -789,7 +1117,7 @@ function Funcs:BuyBox(BoxName, OpenBox, Home)
 		end
 	else
 		for _ = 1, 25 do
-			Drag:FireServer(Box)
+			Drag(Box)
 			Box:PivotTo(Home + Vector3.new(5, 1, 0))
 			task.wait()
 		end
@@ -798,29 +1126,29 @@ function Funcs:BuyBox(BoxName, OpenBox, Home)
 	return true
 end
 
--- Buys the selected shop item Amount times, then takes you back
 function Funcs:AutoBuy(Label, Amount)
 	if type(Label) == "table" then Label = Label[1] end
 
 	if Buy.running then
-		Funcs:Notify("Auto Buy", "Already buying. Press Abort first.")
+		Funcs:Notify("Money", "Auto Buy is already running")
 		return
 	end
 
 	local Entry = Label and Buy.items[Label]
 	if not Entry then
-		Funcs:Notify("Auto Buy", "Pick an item first.")
+		Funcs:Notify("Picking", "Pick at least one item first")
 		return
 	end
 
-	if GetMoney() < Entry.Price * Amount then
-		Funcs:Notify("Auto Buy", "You can't afford " .. Amount .. "x " .. Label .. ".")
+	local Total, Have = Entry.Price * Amount, GetMoney()
+	if Have < Total then
+		Funcs:Notify("Sas Mate", "That costs $" .. Total .. " and you have $" .. Have)
 		return
 	end
 
 	local Root = GetRoot()
 	if not Root then
-		Funcs:Notify("Auto Buy", "Character isn't loaded.")
+		Funcs:Notify("Auto Buy couldn't start", "Auto Buy couldn't start: your character isn't loaded")
 		return
 	end
 
@@ -851,12 +1179,12 @@ function Funcs:AutoBuy(Label, Amount)
 		Buy.running = false
 		Funcs:TeleportTo(Home)
 
-		if Failure and not Aborted then
-			Funcs:Notify("Auto Buy", Done .. "/" .. Amount .. " bought. " .. Failure)
-		elseif Aborted then
-			Funcs:Notify("Auto Buy", "Stopped after " .. Done .. "/" .. Amount .. ".")
+		if Aborted then
+			Funcs:Notify("Sas Mate", "Bought " .. Done .. "/" .. Amount .. " " .. Label .. ": it was stopped")
+		elseif Failure then
+			Funcs:Notify("Sas Mate", "Bought " .. Done .. "/" .. Amount .. " " .. Label .. ": " .. Failure)
 		else
-			Funcs:Notify("Auto Buy", "Bought " .. Done .. "x " .. Label .. ".")
+			Funcs:Notify("Sas Mate", "Bought " .. Done .. " " .. Label)
 		end
 	end)
 end
@@ -865,14 +1193,13 @@ function Funcs:AbortBuying()
 	if Buy.running then
 		Buy.abort = true
 	else
-		Funcs:Notify("Auto Buy", "Nothing is being bought.")
+		Funcs:Notify("Sas Mate", "Nothing to stop")
 	end
 end
 
--- Buys every blueprint you don't own yet
 function Funcs:PurchaseAllBlueprints()
 	if Buy.running then
-		Funcs:Notify("Auto Buy", "Already buying. Press Abort first.")
+		Funcs:Notify("Money", "Auto Buy is already running")
 		return
 	end
 
@@ -896,19 +1223,19 @@ function Funcs:PurchaseAllBlueprints()
 	end
 
 	if #ToBuy == 0 then
-		Funcs:Notify("Blueprints", "You already own all blueprints.")
+		Funcs:Notify("Building", "You already own every blueprint")
 		return
 	end
 
 	local Money = GetMoney()
 	if Money < Cost then
-		Funcs:Notify("Blueprints", "You need $" .. (Cost - Money) .. " more to buy all blueprints.")
+		Funcs:Notify("Building", "You need $" .. (Cost - Money) .. " more to buy every blueprint")
 		return
 	end
 
 	local Root = GetRoot()
 	if not Root then
-		Funcs:Notify("Blueprints", "Character isn't loaded.")
+		Funcs:Notify("Auto Buy couldn't start", "Auto Buy couldn't start: your character isn't loaded")
 		return
 	end
 
@@ -916,14 +1243,23 @@ function Funcs:PurchaseAllBlueprints()
 	local Home = Root.CFrame
 
 	task.spawn(function()
-		local Done = 0
+		local Done, Unsold, Failure = 0, {}, nil
 
 		for _, Name in ipairs(ToBuy) do
 			if Buy.abort then break end
 
-			local Ok, Success = pcall(Funcs.BuyBox, Funcs, Name, true, Home)
-			if Ok and Success then
+			local Ok, Success, Msg = pcall(Funcs.BuyBox, Funcs, Name, true, Home)
+			if not Ok then
+				Success, Msg = false, tostring(Success)
+			end
+
+			if Success then
 				Done = Done + 1
+			elseif Msg == "not on the shelf" then
+				table.insert(Unsold, Name)
+			else
+				Failure = Msg
+				break
 			end
 			task.wait()
 		end
@@ -932,35 +1268,45 @@ function Funcs:PurchaseAllBlueprints()
 		Buy.running = false
 		Funcs:TeleportTo(Home)
 
-		Funcs:Notify("Blueprints", (Aborted and "Stopped. " or "") .. "Bought " .. Done .. "/" .. #ToBuy .. " blueprints.")
+		if Aborted then return end
+		if Done == #ToBuy and #Unsold == 0 then
+			Funcs:Notify("Building", "Bought every blueprint")
+			return
+		end
+		local Parts = { "Bought " .. Done .. " of " .. #ToBuy .. " blueprints." }
+		if #Unsold > 0 then
+			local Names = {}
+			for _, Name in ipairs(Unsold) do
+				local Item = Info:FindFirstChild(Name)
+				local Label = Item and Item:FindFirstChild("ItemName")
+				table.insert(Names, Label and Label.Value or Name)
+			end
+			table.insert(Parts, "Not sold in any shop yet: " .. table.concat(Names, ", "))
+		end
+		if Failure then
+			table.insert(Parts, "Missed: " .. Failure)
+		end
+		Funcs:Notify("Building", table.concat(Parts, " "))
 	end)
 end
 
--- One-off NPC purchases (toll bridge, ferry ticket, power to build with ease)
 function Funcs:MiscBuy(Id, Price, Label)
 	if GetMoney() < Price then
-		Funcs:Notify("Misc Buy", "You need $" .. Price .. " for the " .. Label .. ".")
+		Funcs:Notify("Money", "You don't have enough money for " .. Label)
 		return
 	end
 
 	task.spawn(function()
 		Funcs:TalkToNpc(Id, nil, "Initiate")
 		task.wait(0.5)
-
-		local Ok, Result = Funcs:TalkToNpc(Id, nil, "ConfirmPurchase")
-		if Ok then
-			Funcs:Notify("Misc Buy", "Asked for the " .. Label .. " (server replied: " .. tostring(Result) .. ").")
-		else
-			Funcs:Notify("Misc Buy", "Couldn't buy the " .. Label .. ": " .. tostring(Result))
-		end
+		Funcs:TalkToNpc(Id, nil, "ConfirmPurchase")
+		Funcs:Notify("Money", "Bought " .. Label)
 	end)
 end
 
--- Skips the NPC dialogue delay (patches a constant in the chat client, so it
--- only works on executors with getsenv/setconstant)
 function Funcs:FastCheckout(Value)
 	if typeof(getsenv) ~= "function" or typeof(setconstant) ~= "function" then
-		Funcs:Notify("Fast Checkout", "Your executor doesn't support this.")
+		Funcs:Notify("Executor", "Fast Checkout needs getsenv and setconstant")
 		return
 	end
 
@@ -972,104 +1318,6 @@ function Funcs:FastCheckout(Value)
 	if not Ok then
 		Funcs:Notify("Fast Checkout", "Couldn't patch the chat client (the game may have updated).")
 	end
-end
-
-
--- Chat logger: records every call to the shop clerk remote (what the game sends
--- and what the server answers) so purchases can be debugged
-local ChatLog = { enabled = false, hooked = false, lines = {} }
-
-local function Describe(Value, Depth)
-	Depth = Depth or 0
-	local Kind = typeof(Value)
-
-	if Kind == "string" then
-		return string.format("%q", Value)
-	elseif Kind == "Instance" then
-		return "<" .. Value.ClassName .. " " .. Value:GetFullName() .. ">"
-	elseif Kind == "table" then
-		if Depth >= 3 then return "{...}" end
-		local Parts = {}
-		for Key, Val in pairs(Value) do
-			table.insert(Parts, "[" .. Describe(Key, Depth + 1) .. "]=" .. Describe(Val, Depth + 1))
-		end
-		return "{" .. table.concat(Parts, ", ") .. "}"
-	end
-
-	return tostring(Value)
-end
-
-local function DescribeList(List)
-	local Parts = {}
-	for Index = 1, List.n do
-		Parts[Index] = Describe(List[Index])
-	end
-	return table.concat(Parts, " | ")
-end
-
-function Funcs:LogClerkChat(Value)
-	ChatLog.enabled = Value
-	if not Value or ChatLog.hooked then return end
-
-	if typeof(hookmetamethod) ~= "function" or typeof(getnamecallmethod) ~= "function" then
-		ChatLog.enabled = false
-		Funcs:Notify("Chat Log", "Your executor doesn't support hookmetamethod.")
-		return
-	end
-
-	local Folder = ReplicatedStorage:FindFirstChild("NPCDialog")
-	local Remote = Folder and Folder:FindFirstChild("PlayerChatted")
-	if not Remote then
-		ChatLog.enabled = false
-		Funcs:Notify("Chat Log", "Couldn't find the clerk chat remote.")
-		return
-	end
-
-	local Old
-	Old = hookmetamethod(game, "__namecall", function(Self, ...)
-		if ChatLog.enabled and Self == Remote and getnamecallmethod() == "InvokeServer" then
-			local FromScript = typeof(checkcaller) == "function" and checkcaller() or false
-			local Args = table.pack(...)
-			local Results = table.pack(Old(Self, ...))
-
-			pcall(function()
-				table.insert(ChatLog.lines,
-					(FromScript and "[script] " or "[game] ") .. DescribeList(Args) .. "  =>  " .. DescribeList(Results))
-			end)
-
-			return table.unpack(Results, 1, Results.n)
-		end
-
-		return Old(Self, ...)
-	end)
-
-	ChatLog.hooked = true
-	Funcs:Notify("Chat Log", "On. Buy one item by hand, then press Copy Chat Log.")
-end
-
-function Funcs:CopyChatLog()
-	if #ChatLog.lines == 0 then
-		Funcs:Notify("Chat Log", "Nothing logged yet. Turn it on and buy something first.")
-		return
-	end
-
-	local Text = table.concat(ChatLog.lines, "\n")
-	print(Text)
-
-	if typeof(setclipboard) == "function" then
-		setclipboard(Text)
-		Funcs:Notify("Chat Log", "Copied " .. #ChatLog.lines .. " lines to your clipboard.")
-	elseif typeof(writefile) == "function" then
-		writefile("SasMate_ChatLog.txt", Text)
-		Funcs:Notify("Chat Log", "Saved " .. #ChatLog.lines .. " lines to SasMate_ChatLog.txt.")
-	else
-		Funcs:Notify("Chat Log", "Printed " .. #ChatLog.lines .. " lines to the console.")
-	end
-end
-
-function Funcs:ClearChatLog()
-	ChatLog.lines = {}
-	Funcs:Notify("Chat Log", "Cleared.")
 end
 
 
@@ -1421,21 +1669,9 @@ Section:Slider("FOV", Config.FOV, 30, 120, false, function(Value)
 	Funcs:FOV(Value)
 end)
 
-
-Section:Toggle("Clear Fog", Config.clearFog, function(Value)
-	Config.clearFog = Value
-	Funcs:ClearFog(Value)
-end)
-
-
-Section:Toggle("Global Shadows", Config.globalShadows, function(Value)
-	Config.globalShadows = Value
-	Funcs:GlobalShadows(Value)
-end)
-
 -- MARK: Wood Tab
 --
-Tab = UI:Tab("Wood", "6022668898")
+Tab = UI:Tab("Wood", "6034503369")
 
 -- [[ Section 1 ]]
 --
@@ -1463,12 +1699,8 @@ do
 	end
 end
 
--- MARK: Auto Buy Tab
---
 Tab = UI:Tab("Auto Buy", "6031265983")
 
--- [[ Section 1 ]]
---
 Section = Tab:Section("Auto Buy")
 
 do
@@ -1496,12 +1728,6 @@ do
 	end
 end
 
-Section:Toggle("Debug Messages", Buy.debug, function(Value)
-	Buy.debug = Value
-end)
-
--- [[ Section 2 ]]
---
 Section = Tab:Section("Misc Buy")
 
 Section:Toggle("Fast Checkout", false, function(Value)
@@ -1524,49 +1750,36 @@ Section:Button("Purchase Power To Build With Ease", function()
 	Funcs:MiscBuy(3, 10009000, "Power To Build With Ease")
 end)
 
--- [[ Section 3 ]]
---
-Section = Tab:Section("Troubleshooting")
-
-Section:Toggle("Log Clerk Chat", false, function(Value)
-	Funcs:LogClerkChat(Value)
-end)
-
-Section:Button("Copy Chat Log", function()
-	Funcs:CopyChatLog()
-end)
-
-Section:Button("Clear Chat Log", function()
-	Funcs:ClearChatLog()
-end)
-
 -- MARK: World Tab
 --
-Tab = UI:Tab("World", "6034287594")
+Tab = UI:Tab("World", "6026568213")
 
--- [[ Section 1 ]]
---
 Section = Tab:Section("Time")
 
-Section:Toggle("Set Day", false, function(Value)
-	if Value then
+Section:DropDown("Time of Day", { "Off", "Day", "Night" }, function(Value)
+	if Value == "Day" then
 		Funcs:SetTimeMode("day")
-	elseif Config.timeMode == "day" then
-		Funcs:SetTimeMode(nil)
-	end
-end)
-
-
-Section:Toggle("Set Night", false, function(Value)
-	if Value then
+	elseif Value == "Night" then
 		Funcs:SetTimeMode("night")
-	elseif Config.timeMode == "night" then
+	else
 		Funcs:SetTimeMode(nil)
 	end
 end)
 
--- [[ Section 2 ]]
---
+Section = Tab:Section("Visuals")
+
+Section:Toggle("Clear Fog", Config.clearFog, function(Value)
+	Config.clearFog = Value
+	Funcs:ClearFog(Value)
+end)
+
+
+Section:Toggle("Global Shadows", Config.globalShadows, function(Value)
+	Config.globalShadows = Value
+	Funcs:GlobalShadows(Value)
+end)
+
+
 Section = Tab:Section("Teleports")
 
 do
@@ -1611,3 +1824,4 @@ end)
 Section:Toggle("Fly Button", false, function(Value)
 	Funcs:FlyButton(Value)
 end)
+
