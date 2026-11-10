@@ -593,6 +593,7 @@ local Buy = {
 	abort   = false,
 	item    = nil, -- selected dropdown label
 	amount  = 1,
+	debug   = true, -- step-by-step notifications (toggle in the Auto Buy tab)
 	items   = {},  -- ["Item - $Price"] = { Box = "BoxItemName", Price = number }
 }
 
@@ -600,6 +601,12 @@ local function GetMoney()
 	local Stats = LocalPlayer:FindFirstChild("leaderstats")
 	local Money = Stats and Stats:FindFirstChild("Money")
 	return Money and Money.Value or 0
+end
+
+local function Debug(Message)
+	if Buy.debug then
+		Funcs:Notify("Auto Buy", Message)
+	end
 end
 
 -- Every non-blueprint item currently sitting in the shops, as "Name - $Price"
@@ -679,8 +686,35 @@ function Funcs:FindShopBox(BoxName, Timeout)
 	return nil
 end
 
--- Buys ONE box: walks to it, puts it on the counter, confirms the purchase,
--- then either opens it (blueprints) or drops it at Home
+-- Finds the shop clerk standing at this counter
+function Funcs:GetStoreNpc(Counter)
+	local Best, BestDist
+	for _, Obj in ipairs(Counter.Parent:GetDescendants()) do
+		if Obj:IsA("Humanoid") and Obj.Parent:IsA("Model") then
+			local Part = Obj.Parent:FindFirstChild("HumanoidRootPart") or Obj.Parent:FindFirstChild("Head")
+			if Part then
+				local Dist = (Part.Position - Counter.Position).Magnitude
+				if not BestDist or Dist < BestDist then
+					Best, BestDist = Obj.Parent, Dist
+				end
+			end
+		end
+	end
+	return Best
+end
+
+-- Talks to a shop NPC: Response is "Initiate" to start the chat, "ConfirmPurchase" to buy
+function Funcs:TalkToNpc(Id, Npc, Response)
+	local Remote = ReplicatedStorage.NPCDialog.PlayerChatted
+	local Dialog = { ID = Id, Character = Npc, Name = Npc and Npc.Name }
+
+	return pcall(function()
+		return Remote:InvokeServer(Dialog, Response)
+	end)
+end
+
+-- Buys ONE box: walks to it, puts it on the counter, talks to the clerk,
+-- confirms the purchase, then either opens it (blueprints) or drops it at Home
 function Funcs:BuyBox(BoxName, OpenBox, Home)
 	local Box = Funcs:FindShopBox(BoxName, 10)
 	if not Box then return false, "Couldn't find " .. BoxName .. " in the shop." end
@@ -689,13 +723,25 @@ function Funcs:BuyBox(BoxName, OpenBox, Home)
 	local Root = GetRoot()
 	if not Main or not Root then return false, "Character isn't loaded." end
 
+	Debug("Found " .. BoxName .. ".")
+
 	if (Root.Position - Main.Position).Magnitude > 25 then
 		Funcs:TeleportTo(CFrame.new(Main.Position + Vector3.new(5, 1, 5)))
+		task.wait(0.2)
 	end
 
 	local Counter = Funcs:GetStoreCounter()
 	local StoreId = Counter and ShopIds[Counter.Parent.Name]
-	if not StoreId then return false, "Couldn't find the store counter." end
+	if not StoreId then
+		return false, "Couldn't find the store counter" .. (Counter and (" (unknown store " .. Counter.Parent.Name .. ").") or ".")
+	end
+
+	-- Stand next to the counter so the clerk can hear you
+	Root = GetRoot()
+	if Root and (Root.Position - Counter.Position).Magnitude > 12 then
+		Funcs:TeleportTo(CFrame.new(Counter.Position + Vector3.new(5, 3, 5)))
+		task.wait(0.2)
+	end
 
 	local Drag = ReplicatedStorage.Interaction.ClientIsDragging
 
@@ -705,23 +751,35 @@ function Funcs:BuyBox(BoxName, OpenBox, Home)
 		Box:PivotTo(Counter.CFrame + Vector3.new(0, Counter.Size.Y / 2 + Main.Size.Y / 2 + 0.5, 0))
 		task.wait()
 	end
+	Debug("Item is on the counter.")
+
+	-- Talk to the clerk first, then confirm
+	local Npc = Funcs:GetStoreNpc(Counter)
+	Debug("Talking to " .. (Npc and Npc.Name or "the clerk") .. " (store " .. StoreId .. ").")
+	local InitOk, InitResult = Funcs:TalkToNpc(StoreId, Npc, "Initiate")
+	Debug("Initiate -> " .. tostring(InitOk) .. ", " .. tostring(InitResult))
+	task.wait(0.5)
 
 	-- Confirm the purchase until the box leaves the shop
+	local Logged = false
 	local Started = os.clock()
 	repeat
 		Drag:FireServer(Box)
 		task.spawn(function()
-			pcall(function()
-				ReplicatedStorage.NPCDialog.PlayerChatted:InvokeServer({ ID = StoreId }, "ConfirmPurchase")
-			end)
+			local Ok, Result = Funcs:TalkToNpc(StoreId, Npc, "ConfirmPurchase")
+			if not Logged then
+				Logged = true
+				Debug("ConfirmPurchase -> " .. tostring(Ok) .. ", " .. tostring(Result))
+			end
 		end)
 		task.wait(0.1)
 	until Buy.abort or not Box.Parent or Box.Parent.Name ~= "ShopItems" or os.clock() - Started > 15
 
 	if Buy.abort then return false, "Aborted." end
 	if Box.Parent and Box.Parent.Name == "ShopItems" then
-		return false, "Purchase timed out."
+		return false, "The clerk didn't accept the purchase (turn on Debug Messages to see why)."
 	end
+	Debug("Purchased.")
 
 	if OpenBox then
 		local Opened = os.clock()
@@ -885,11 +943,17 @@ function Funcs:MiscBuy(Id, Price, Label)
 		return
 	end
 
-	local Ok = pcall(function()
-		ReplicatedStorage.NPCDialog.PlayerChatted:InvokeServer({ ID = Id }, "ConfirmPurchase")
-	end)
+	task.spawn(function()
+		Funcs:TalkToNpc(Id, nil, "Initiate")
+		task.wait(0.5)
 
-	Funcs:Notify("Misc Buy", Ok and ("Requested the " .. Label .. ".") or ("Couldn't buy the " .. Label .. "."))
+		local Ok, Result = Funcs:TalkToNpc(Id, nil, "ConfirmPurchase")
+		if Ok then
+			Funcs:Notify("Misc Buy", "Asked for the " .. Label .. " (server replied: " .. tostring(Result) .. ").")
+		else
+			Funcs:Notify("Misc Buy", "Couldn't buy the " .. Label .. ": " .. tostring(Result))
+		end
+	end)
 end
 
 -- Skips the NPC dialogue delay (patches a constant in the chat client, so it
@@ -1333,6 +1397,10 @@ do
 		end)
 	end
 end
+
+Section:Toggle("Debug Messages", Buy.debug, function(Value)
+	Buy.debug = Value
+end)
 
 -- [[ Section 2 ]]
 --
