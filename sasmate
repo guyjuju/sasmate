@@ -975,6 +975,104 @@ function Funcs:FastCheckout(Value)
 end
 
 
+-- Chat logger: records every call to the shop clerk remote (what the game sends
+-- and what the server answers) so purchases can be debugged
+local ChatLog = { enabled = false, hooked = false, lines = {} }
+
+local function Describe(Value, Depth)
+	Depth = Depth or 0
+	local Kind = typeof(Value)
+
+	if Kind == "string" then
+		return string.format("%q", Value)
+	elseif Kind == "Instance" then
+		return "<" .. Value.ClassName .. " " .. Value:GetFullName() .. ">"
+	elseif Kind == "table" then
+		if Depth >= 3 then return "{...}" end
+		local Parts = {}
+		for Key, Val in pairs(Value) do
+			table.insert(Parts, "[" .. Describe(Key, Depth + 1) .. "]=" .. Describe(Val, Depth + 1))
+		end
+		return "{" .. table.concat(Parts, ", ") .. "}"
+	end
+
+	return tostring(Value)
+end
+
+local function DescribeList(List)
+	local Parts = {}
+	for Index = 1, List.n do
+		Parts[Index] = Describe(List[Index])
+	end
+	return table.concat(Parts, " | ")
+end
+
+function Funcs:LogClerkChat(Value)
+	ChatLog.enabled = Value
+	if not Value or ChatLog.hooked then return end
+
+	if typeof(hookmetamethod) ~= "function" or typeof(getnamecallmethod) ~= "function" then
+		ChatLog.enabled = false
+		Funcs:Notify("Chat Log", "Your executor doesn't support hookmetamethod.")
+		return
+	end
+
+	local Folder = ReplicatedStorage:FindFirstChild("NPCDialog")
+	local Remote = Folder and Folder:FindFirstChild("PlayerChatted")
+	if not Remote then
+		ChatLog.enabled = false
+		Funcs:Notify("Chat Log", "Couldn't find the clerk chat remote.")
+		return
+	end
+
+	local Old
+	Old = hookmetamethod(game, "__namecall", function(Self, ...)
+		if ChatLog.enabled and Self == Remote and getnamecallmethod() == "InvokeServer" then
+			local FromScript = typeof(checkcaller) == "function" and checkcaller() or false
+			local Args = table.pack(...)
+			local Results = table.pack(Old(Self, ...))
+
+			pcall(function()
+				table.insert(ChatLog.lines,
+					(FromScript and "[script] " or "[game] ") .. DescribeList(Args) .. "  =>  " .. DescribeList(Results))
+			end)
+
+			return table.unpack(Results, 1, Results.n)
+		end
+
+		return Old(Self, ...)
+	end)
+
+	ChatLog.hooked = true
+	Funcs:Notify("Chat Log", "On. Buy one item by hand, then press Copy Chat Log.")
+end
+
+function Funcs:CopyChatLog()
+	if #ChatLog.lines == 0 then
+		Funcs:Notify("Chat Log", "Nothing logged yet. Turn it on and buy something first.")
+		return
+	end
+
+	local Text = table.concat(ChatLog.lines, "\n")
+	print(Text)
+
+	if typeof(setclipboard) == "function" then
+		setclipboard(Text)
+		Funcs:Notify("Chat Log", "Copied " .. #ChatLog.lines .. " lines to your clipboard.")
+	elseif typeof(writefile) == "function" then
+		writefile("SasMate_ChatLog.txt", Text)
+		Funcs:Notify("Chat Log", "Saved " .. #ChatLog.lines .. " lines to SasMate_ChatLog.txt.")
+	else
+		Funcs:Notify("Chat Log", "Printed " .. #ChatLog.lines .. " lines to the console.")
+	end
+end
+
+function Funcs:ClearChatLog()
+	ChatLog.lines = {}
+	Funcs:Notify("Chat Log", "Cleared.")
+end
+
+
 -- MARK: Teleport Funcs
 --
 
@@ -1424,6 +1522,22 @@ end)
 
 Section:Button("Purchase Power To Build With Ease", function()
 	Funcs:MiscBuy(3, 10009000, "Power To Build With Ease")
+end)
+
+-- [[ Section 3 ]]
+--
+Section = Tab:Section("Troubleshooting")
+
+Section:Toggle("Log Clerk Chat", false, function(Value)
+	Funcs:LogClerkChat(Value)
+end)
+
+Section:Button("Copy Chat Log", function()
+	Funcs:CopyChatLog()
+end)
+
+Section:Button("Clear Chat Log", function()
+	Funcs:ClearChatLog()
 end)
 
 -- MARK: World Tab
