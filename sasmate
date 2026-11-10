@@ -574,120 +574,340 @@ function Funcs:StopWood()
 end
 
 
--- MARK: Logs & Planks Funcs
+-- MARK: Auto Buy Funcs
 --
 
--- Where logs/planks get sent to be sold (Wood Drop Off)
-local SellSpot = CFrame.new(315, -0.296, 85.791) * CFrame.Angles(math.rad(90), 0, 0)
+-- Store ids used by the shop NPCs (keyed by the store model's name)
+local ShopIds = {
+	WoodRUs        = 7,
+	CarStore       = 9,
+	FurnitureStore = 8,
+	ShackShop      = 10,
+	LogicStore     = 12,
+	FineArt        = 11,
+}
 
--- Every loose log you own
-function Funcs:GetMyLogs()
-	local List = {}
-	local Folder = workspace:FindFirstChild("LogModels")
-	if not Folder then return List end
+-- Auto Buy runtime state
+local Buy = {
+	running = false,
+	abort   = false,
+	item    = nil, -- selected dropdown label
+	amount  = 1,
+	items   = {},  -- ["Item - $Price"] = { Box = "BoxItemName", Price = number }
+}
 
-	for _, Log in ipairs(Folder:GetChildren()) do
-		local Owner = Log:FindFirstChild("Owner")
-		if Log.Name:sub(1, 6) == "Loose_" and Owner and Owner.Value == LocalPlayer then
-			table.insert(List, Log)
-		end
-	end
-	return List
+local function GetMoney()
+	local Stats = LocalPlayer:FindFirstChild("leaderstats")
+	local Money = Stats and Stats:FindFirstChild("Money")
+	return Money and Money.Value or 0
 end
 
--- Every processed plank you own
-function Funcs:GetMyPlanks()
-	local List = {}
-	local Folder = workspace:FindFirstChild("PlayerModels")
-	if not Folder then return List end
+-- Every non-blueprint item currently sitting in the shops, as "Name - $Price"
+function Funcs:GetShopItems()
+	local Names = {}
+	Buy.items = {}
 
-	for _, Plank in ipairs(Folder:GetChildren()) do
-		local Owner = Plank:FindFirstChild("Owner")
-		if Plank.Name == "Plank" and Owner and Owner.Value == LocalPlayer then
-			table.insert(List, Plank)
+	local Info = ReplicatedStorage:FindFirstChild("ClientItemInfo")
+	local Stores = workspace:FindFirstChild("Stores")
+	if not Info or not Stores then return Names end
+
+	for _, Store in ipairs(Stores:GetChildren()) do
+		if Store:IsA("Model") and Store.Name == "ShopItems" then
+			for _, Box in ipairs(Store:GetChildren()) do
+				local Type = Box:FindFirstChild("Type")
+				local BoxName = Box:FindFirstChild("BoxItemName")
+				local Item = BoxName and Info:FindFirstChild(BoxName.Value)
+
+				if Type and Type.Value ~= "Blueprint" and Item
+					and Item:FindFirstChild("ItemName") and Item:FindFirstChild("Price") then
+					local Label = Item.ItemName.Value .. " - $" .. Item.Price.Value
+					if not Buy.items[Label] then
+						Buy.items[Label] = { Box = Item.Name, Price = Item.Price.Value }
+						table.insert(Names, Label)
+					end
+				end
+			end
 		end
 	end
-	return List
+
+	table.sort(Names)
+	return Names
 end
 
--- Keeps telling the server you're dragging the model so the move sticks
-function Funcs:Drag(Model, Count)
-	task.spawn(function()
-		for _ = 1, Count or 60 do
-			if not Model.Parent then break end
-			ReplicatedStorage.Interaction.ClientIsDragging:FireServer(Model)
+-- The shop counter closest to you
+function Funcs:GetStoreCounter()
+	local Char = LocalPlayer.Character
+	local Head = Char and Char:FindFirstChild("Head")
+	local Stores = workspace:FindFirstChild("Stores")
+	if not Head or not Stores then return nil end
+
+	local Best, BestDist
+	for _, Store in ipairs(Stores:GetChildren()) do
+		if Store:IsA("Model") and Store.Name ~= "ShopItems" then
+			local Counter = Store:FindFirstChild("Counter")
+			if Counter then
+				local Dist = (Head.Position - Counter.Position).Magnitude
+				if not BestDist or Dist < BestDist then
+					Best, BestDist = Counter, Dist
+				end
+			end
+		end
+	end
+	return Best
+end
+
+-- Waits (up to Timeout seconds) for an unowned shop box with this BoxItemName
+function Funcs:FindShopBox(BoxName, Timeout)
+	local Started = os.clock()
+	repeat
+		local Stores = workspace:FindFirstChild("Stores")
+		if Stores then
+			for _, Store in ipairs(Stores:GetChildren()) do
+				if Store:IsA("Model") and Store.Name == "ShopItems" then
+					for _, Box in ipairs(Store:GetChildren()) do
+						local Owner = Box:FindFirstChild("Owner")
+						local Name = Box:FindFirstChild("BoxItemName")
+						if Owner and Owner.Value == nil and Name and tostring(Name.Value) == BoxName then
+							return Box
+						end
+					end
+				end
+			end
+		end
+		task.wait()
+	until Buy.abort or os.clock() - Started > (Timeout or 10)
+	return nil
+end
+
+-- Buys ONE box: walks to it, puts it on the counter, confirms the purchase,
+-- then either opens it (blueprints) or drops it at Home
+function Funcs:BuyBox(BoxName, OpenBox, Home)
+	local Box = Funcs:FindShopBox(BoxName, 10)
+	if not Box then return false, "Couldn't find " .. BoxName .. " in the shop." end
+
+	local Main = Box:FindFirstChild("Main")
+	local Root = GetRoot()
+	if not Main or not Root then return false, "Character isn't loaded." end
+
+	if (Root.Position - Main.Position).Magnitude > 25 then
+		Funcs:TeleportTo(CFrame.new(Main.Position + Vector3.new(5, 1, 5)))
+	end
+
+	local Counter = Funcs:GetStoreCounter()
+	local StoreId = Counter and ShopIds[Counter.Parent.Name]
+	if not StoreId then return false, "Couldn't find the store counter." end
+
+	local Drag = ReplicatedStorage.Interaction.ClientIsDragging
+
+	-- Put the item on the counter
+	for _ = 1, 25 do
+		Drag:FireServer(Box)
+		Box:PivotTo(Counter.CFrame + Vector3.new(0, Counter.Size.Y / 2 + Main.Size.Y / 2 + 0.5, 0))
+		task.wait()
+	end
+
+	-- Confirm the purchase until the box leaves the shop
+	local Started = os.clock()
+	repeat
+		Drag:FireServer(Box)
+		task.spawn(function()
+			pcall(function()
+				ReplicatedStorage.NPCDialog.PlayerChatted:InvokeServer({ ID = StoreId }, "ConfirmPurchase")
+			end)
+		end)
+		task.wait(0.1)
+	until Buy.abort or not Box.Parent or Box.Parent.Name ~= "ShopItems" or os.clock() - Started > 15
+
+	if Buy.abort then return false, "Aborted." end
+	if Box.Parent and Box.Parent.Name == "ShopItems" then
+		return false, "Purchase timed out."
+	end
+
+	if OpenBox then
+		local Opened = os.clock()
+		while Box.Parent and not Buy.abort and os.clock() - Opened < 10 do
+			ReplicatedStorage.Interaction.ClientInteracted:FireServer(Box, "Open box")
+			task.wait(1)
+		end
+	else
+		for _ = 1, 25 do
+			Drag:FireServer(Box)
+			Box:PivotTo(Home + Vector3.new(5, 1, 0))
 			task.wait()
+		end
+	end
+
+	return true
+end
+
+-- Buys the selected shop item Amount times, then takes you back
+function Funcs:AutoBuy(Label, Amount)
+	if type(Label) == "table" then Label = Label[1] end
+
+	if Buy.running then
+		Funcs:Notify("Auto Buy", "Already buying. Press Abort first.")
+		return
+	end
+
+	local Entry = Label and Buy.items[Label]
+	if not Entry then
+		Funcs:Notify("Auto Buy", "Pick an item first.")
+		return
+	end
+
+	if GetMoney() < Entry.Price * Amount then
+		Funcs:Notify("Auto Buy", "You can't afford " .. Amount .. "x " .. Label .. ".")
+		return
+	end
+
+	local Root = GetRoot()
+	if not Root then
+		Funcs:Notify("Auto Buy", "Character isn't loaded.")
+		return
+	end
+
+	Buy.running, Buy.abort = true, false
+	local Home = Root.CFrame
+
+	task.spawn(function()
+		local Done, Failure = 0, nil
+
+		for _ = 1, Amount do
+			if Buy.abort then break end
+
+			local Ok, Success, Msg = pcall(Funcs.BuyBox, Funcs, Entry.Box, false, Home)
+			if not Ok then
+				Success, Msg = false, tostring(Success)
+			end
+
+			if not Success then
+				Failure = Msg
+				break
+			end
+
+			Done = Done + 1
+			task.wait(0.3)
+		end
+
+		local Aborted = Buy.abort
+		Buy.running = false
+		Funcs:TeleportTo(Home)
+
+		if Failure and not Aborted then
+			Funcs:Notify("Auto Buy", Done .. "/" .. Amount .. " bought. " .. Failure)
+		elseif Aborted then
+			Funcs:Notify("Auto Buy", "Stopped after " .. Done .. "/" .. Amount .. ".")
+		else
+			Funcs:Notify("Auto Buy", "Bought " .. Done .. "x " .. Label .. ".")
 		end
 	end)
 end
 
--- Moves a list of models above you (spread out a little so they don't pile up)
-function Funcs:BringModels(List, Label)
+function Funcs:AbortBuying()
+	if Buy.running then
+		Buy.abort = true
+	else
+		Funcs:Notify("Auto Buy", "Nothing is being bought.")
+	end
+end
+
+-- Buys every blueprint you don't own yet
+function Funcs:PurchaseAllBlueprints()
+	if Buy.running then
+		Funcs:Notify("Auto Buy", "Already buying. Press Abort first.")
+		return
+	end
+
+	local Info = ReplicatedStorage:FindFirstChild("ClientItemInfo")
+	local Folder = LocalPlayer:FindFirstChild("PlayerBlueprints")
+	local Owned = Folder and Folder:FindFirstChild("Blueprints")
+	if not Info or not Owned then
+		Funcs:Notify("Blueprints", "Couldn't read your blueprint data.")
+		return
+	end
+
+	local ToBuy, Cost = {}, 0
+	for _, Item in ipairs(Info:GetChildren()) do
+		local Type = Item:FindFirstChild("Type")
+		local Price = Item:FindFirstChild("Price")
+		if Type and Price and (Type.Value == "Structure" or Type.Value == "Furniture")
+			and Item:FindFirstChild("WoodCost") and not Owned:FindFirstChild(Item.Name) then
+			table.insert(ToBuy, Item.Name)
+			Cost = Cost + Price.Value
+		end
+	end
+
+	if #ToBuy == 0 then
+		Funcs:Notify("Blueprints", "You already own all blueprints.")
+		return
+	end
+
+	local Money = GetMoney()
+	if Money < Cost then
+		Funcs:Notify("Blueprints", "You need $" .. (Cost - Money) .. " more to buy all blueprints.")
+		return
+	end
+
 	local Root = GetRoot()
 	if not Root then
-		Funcs:Notify(Label, "Character isn't loaded.")
-		return
-	end
-	if #List == 0 then
-		Funcs:Notify(Label, "You don't have any " .. Label:lower() .. ".")
+		Funcs:Notify("Blueprints", "Character isn't loaded.")
 		return
 	end
 
-	for Index, Model in ipairs(List) do
-		local Offset = Vector3.new(((Index - 1) % 5) * 6 - 12, 20 + math.floor((Index - 1) / 5) * 4, 0)
-		Model:PivotTo(Root.CFrame + Offset)
-		Funcs:Drag(Model, 60)
-	end
+	Buy.running, Buy.abort = true, false
+	local Home = Root.CFrame
 
-	Funcs:Notify(Label, "Brought " .. #List .. " to you.")
-end
+	task.spawn(function()
+		local Done = 0
 
--- Sends a list of models to the Wood Drop Off
-function Funcs:SellModels(List, Label)
-	if #List == 0 then
-		Funcs:Notify(Label, "You don't have any " .. Label:lower() .. " to sell.")
-		return
-	end
+		for _, Name in ipairs(ToBuy) do
+			if Buy.abort then break end
 
-	for _, Model in ipairs(List) do
-		for _, Part in ipairs(Model:GetChildren()) do
-			if Part.Name == "WoodSection" then
-				task.spawn(function()
-					for _ = 1, 10 do
-						task.wait()
-						Part.CFrame = SellSpot
-					end
-				end)
+			local Ok, Success = pcall(Funcs.BuyBox, Funcs, Name, true, Home)
+			if Ok and Success then
+				Done = Done + 1
 			end
+			task.wait()
 		end
-		Funcs:Drag(Model, 20)
-	end
 
-	Funcs:Notify(Label, "Sending " .. #List .. " to the Wood Drop Off. Press again if any get stuck.")
+		local Aborted = Buy.abort
+		Buy.running = false
+		Funcs:TeleportTo(Home)
+
+		Funcs:Notify("Blueprints", (Aborted and "Stopped. " or "") .. "Bought " .. Done .. "/" .. #ToBuy .. " blueprints.")
+	end)
 end
 
-function Funcs:TPWoodToYou()
-	Funcs:BringModels(Funcs:GetMyLogs(), "Logs")
-end
-
-function Funcs:TPPlanksToYou()
-	Funcs:BringModels(Funcs:GetMyPlanks(), "Planks")
-end
-
-function Funcs:SellCutWood()
-	Funcs:SellModels(Funcs:GetMyLogs(), "Logs")
-end
-
--- Selling every plank is destructive, so it needs a second press within 5 seconds
-local PlankSellConfirm = 0
-function Funcs:SellProcessedPlanks()
-	if os.clock() > PlankSellConfirm then
-		PlankSellConfirm = os.clock() + 5
-		Funcs:Notify("Planks", "This sells ALL your planks. Press again within 5s to confirm.")
+-- One-off NPC purchases (toll bridge, ferry ticket, power to build with ease)
+function Funcs:MiscBuy(Id, Price, Label)
+	if GetMoney() < Price then
+		Funcs:Notify("Misc Buy", "You need $" .. Price .. " for the " .. Label .. ".")
 		return
 	end
-	PlankSellConfirm = 0
-	Funcs:SellModels(Funcs:GetMyPlanks(), "Planks")
+
+	local Ok = pcall(function()
+		ReplicatedStorage.NPCDialog.PlayerChatted:InvokeServer({ ID = Id }, "ConfirmPurchase")
+	end)
+
+	Funcs:Notify("Misc Buy", Ok and ("Requested the " .. Label .. ".") or ("Couldn't buy the " .. Label .. "."))
+end
+
+-- Skips the NPC dialogue delay (patches a constant in the chat client, so it
+-- only works on executors with getsenv/setconstant)
+function Funcs:FastCheckout(Value)
+	if typeof(getsenv) ~= "function" or typeof(setconstant) ~= "function" then
+		Funcs:Notify("Fast Checkout", "Your executor doesn't support this.")
+		return
+	end
+
+	local Ok = pcall(function()
+		local Client = LocalPlayer.PlayerGui.ChatGUI.NPCChattingClient
+		setconstant(getsenv(Client).advanceChat, 19, Value and 0 or 1)
+	end)
+
+	if not Ok then
+		Funcs:Notify("Fast Checkout", "Couldn't patch the chat client (the game may have updated).")
+	end
 end
 
 
@@ -1081,24 +1301,61 @@ do
 	end
 end
 
+-- MARK: Auto Buy Tab
+--
+Tab = UI:Tab("Auto Buy", "6031265983")
+
+-- [[ Section 1 ]]
+--
+Section = Tab:Section("Auto Buy")
+
+do
+	local Items = Funcs:GetShopItems()
+
+	if #Items == 0 then
+		Section:Paragraph(" No shop items found", " Rejoin the server and re-run the script")
+	else
+		Section:Slider("Amount", Buy.amount, 1, 100, false, function(Value)
+			Buy.amount = Value
+		end)
+
+		Section:DropDown("Select Item", Items, function(Value)
+			if type(Value) == "table" then Value = Value[1] end
+			Buy.item = Value
+		end)
+
+		Section:Button("Purchase Selected Item", function()
+			Funcs:AutoBuy(Buy.item, Buy.amount)
+		end)
+
+		Section:Button("Abort Purchasing", function()
+			Funcs:AbortBuying()
+		end)
+	end
+end
+
 -- [[ Section 2 ]]
 --
-Section = Tab:Section("Logs & Planks")
+Section = Tab:Section("Misc Buy")
 
-Section:Button("TP Wood to You", function()
-	Funcs:TPWoodToYou()
+Section:Toggle("Fast Checkout", false, function(Value)
+	Funcs:FastCheckout(Value)
 end)
 
-Section:Button("TP Planks to You", function()
-	Funcs:TPPlanksToYou()
+Section:Button("Purchase All Blueprints", function()
+	Funcs:PurchaseAllBlueprints()
 end)
 
-Section:Button("Sell Cut Wood", function()
-	Funcs:SellCutWood()
+Section:Button("Purchase Toll Bridge", function()
+	Funcs:MiscBuy(14, 100, "Toll Bridge")
 end)
 
-Section:Button("Sell Processed Planks", function()
-	Funcs:SellProcessedPlanks()
+Section:Button("Purchase Ferry Ticket", function()
+	Funcs:MiscBuy(13, 400, "Ferry Ticket")
+end)
+
+Section:Button("Purchase Power To Build With Ease", function()
+	Funcs:MiscBuy(3, 10009000, "Power To Build With Ease")
 end)
 
 -- MARK: World Tab
