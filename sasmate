@@ -1229,6 +1229,339 @@ function Funcs:SetSawmillSize(Biggest)
 end
 
 
+-- MARK: Player Tool Funcs
+--
+
+-- Walk through walls
+function Funcs:NoClip(Value)
+	Disconnect("NoClip")
+	if not Value then return end
+
+	Connections.NoClip = RunService.Stepped:Connect(function()
+		local Char = LocalPlayer.Character
+		if not Char then return end
+
+		for _, Part in ipairs(Char:GetChildren()) do
+			if Part:IsA("BasePart") then
+				Part.CanCollide = false
+			end
+		end
+	end)
+end
+
+-- Gives you the four building tools (BTools)
+function Funcs:BTools()
+	local Backpack = LocalPlayer:FindFirstChild("Backpack")
+	if not Backpack then return end
+
+	if Backpack:FindFirstChildOfClass("HopperBin") then
+		Funcs:Notify("BTools", "You already have BTools.")
+		return
+	end
+
+	local Ok = pcall(function()
+		for Type = 1, 4 do
+			local Bin = Instance.new("HopperBin")
+			Bin.BinType = Type
+			Bin.Parent = Backpack
+		end
+	end)
+
+	if not Ok then
+		Funcs:Notify("BTools", "Couldn't create BTools on this executor.")
+	end
+end
+
+-- Respawns you by removing your head (nothing is lost)
+function Funcs:SafeDeath()
+	local Char = LocalPlayer.Character
+	local Head = Char and Char:FindFirstChild("Head")
+
+	if Head then
+		Head:Destroy()
+	else
+		Funcs:Notify("Safe Suicide", "You're already dead.")
+	end
+end
+
+
+-- MARK: Lighting Funcs
+--
+
+-- Spooky lighting (the game keeps a switch for it in Lighting)
+function Funcs:SpookMode(Value)
+	local Switch = Lighting:FindFirstChild("Spook")
+	if Switch and Switch:IsA("BoolValue") then
+		Switch.Value = Value
+	else
+		Funcs:Notify("Spook Mode", "Couldn't find the spook switch.")
+	end
+end
+
+function Funcs:Brightness(Value)
+	Lighting.Brightness = Value
+end
+
+local Graphics = { on = false, effects = {}, saved = {}, overlay = nil }
+
+-- Nicer lighting: blur, sun rays and contrast, clear water and see-through leaves
+function Funcs:BetterGraphics(Value)
+	if Value == Graphics.on then return end
+	Graphics.on = Value
+
+	if Value then
+		-- Switch off the game's own colour correction while ours is on
+		Graphics.saved = {}
+		for _, Child in ipairs(Lighting:GetChildren()) do
+			if Child:IsA("ColorCorrectionEffect") then
+				Graphics.saved[Child] = Child.Enabled
+				Child.Enabled = false
+			end
+		end
+
+		local function Make(Class, Props)
+			local Effect = Instance.new(Class)
+			for Key, Val in pairs(Props) do
+				Effect[Key] = Val
+			end
+			Effect.Name = "SasMate" .. Class
+			Effect.Parent = Lighting
+			table.insert(Graphics.effects, Effect)
+		end
+
+		Make("BlurEffect", { Size = 3 })
+		Make("ColorCorrectionEffect", { Brightness = 0.03, Contrast = 0.3, Saturation = 0.01, TintColor = Color3.fromRGB(244, 244, 244) })
+		Make("SunRaysEffect", { Intensity = 0.2, Spread = 1 })
+
+		local Overlay = LocalPlayer.PlayerGui:FindFirstChild("UnderwaterOverlay")
+		if Overlay and Overlay:IsA("LayerCollector") then
+			Graphics.overlay = Overlay
+			Overlay.Enabled = false
+		end
+	else
+		for _, Effect in ipairs(Graphics.effects) do
+			Effect:Destroy()
+		end
+		Graphics.effects = {}
+
+		for Child, Enabled in pairs(Graphics.saved) do
+			if Child.Parent then
+				Child.Enabled = Enabled
+			end
+		end
+		Graphics.saved = {}
+
+		if Graphics.overlay and Graphics.overlay.Parent then
+			Graphics.overlay.Enabled = true
+		end
+		Graphics.overlay = nil
+	end
+
+	-- Water and leaves are all over the map, so do them in the background
+	task.spawn(function()
+		local Seen = 0
+		for _, Obj in ipairs(workspace:GetDescendants()) do
+			if Graphics.on ~= Value then return end -- toggled again, stop
+
+			if Obj:IsA("Part") then
+				if Obj.Name == "Water" then
+					pcall(function()
+						workspace.Terrain:FillBlock(Obj.CFrame, Obj.Size, Value and Enum.Material.Water or Enum.Material.Air)
+					end)
+					Obj.Transparency = (Value or MapState.water) and 1 or 0
+				elseif Obj.Name == "LeafPart" then
+					Obj.Transparency = Value and 0.5 or 0
+				end
+			end
+
+			Seen = Seen + 1
+			if Seen % 400 == 0 then
+				task.wait()
+			end
+		end
+	end)
+end
+
+
+-- MARK: Vehicle Funcs
+--
+
+local Vehicle = {
+	speed     = nil, -- nil = leave the car's own setting alone
+	steer     = nil,
+	color     = nil,
+	stopOnPink = false,
+	spawning  = false,
+	abort     = false,
+}
+
+local CarColors = {
+	"Medium stone grey", "Sand green", "Sand red", "Faded green", "Dark grey metallic", "Dark grey",
+	"Earth yellow", "Earth orange", "Silver", "Brick yellow", "Dark red", "Hot pink",
+}
+
+local function IsOwnVehicle(Model)
+	local Type = Model:FindFirstChild("Type")
+	local Owner = Model:FindFirstChild("Owner")
+	return Type and Type.Value == "Vehicle" and Owner and Owner.Value == LocalPlayer
+end
+
+local function ApplyVehicleSettings(Model)
+	local Config = Model:FindFirstChild("Configuration")
+	if not Config then return end
+
+	for Key, Value in pairs({ MaxSpeed = Vehicle.speed, SteerAngle = Vehicle.steer }) do
+		local Setting = Config:FindFirstChild(Key)
+		if Setting and Value then
+			Setting.Value = Value
+		end
+	end
+end
+
+-- Sets MaxSpeed or SteerAngle on all your vehicles (and on any you spawn later)
+function Funcs:SetVehicleSetting(Key, Value)
+	if Key == "MaxSpeed" then
+		Vehicle.speed = Value
+	else
+		Vehicle.steer = Value
+	end
+
+	local Models = workspace:FindFirstChild("PlayerModels")
+	if not Models then return end
+
+	for _, Model in ipairs(Models:GetChildren()) do
+		if IsOwnVehicle(Model) then
+			ApplyVehicleSettings(Model)
+		end
+	end
+end
+
+-- Applies your speed and steering to every new vehicle of yours
+function Funcs:InstallVehicleHook()
+	Disconnect("VehicleAdded")
+
+	local Models = workspace:FindFirstChild("PlayerModels")
+	if not Models then return end
+
+	Connections.VehicleAdded = Models.ChildAdded:Connect(function(Model)
+		local Type = Model:WaitForChild("Type", 5)
+		local Config = Model:WaitForChild("Configuration", 5)
+		if Type and Config and IsOwnVehicle(Model) then
+			ApplyVehicleSettings(Model)
+		end
+	end)
+end
+
+-- Flips the car you are driving back onto its wheels (and lifts it a little)
+function Funcs:FlipVehicle()
+	local _, Hum = GetRoot()
+	local Seat = Hum and Hum.SeatPart
+
+	if not Seat or Seat.Name ~= "DriveSeat" then
+		Funcs:Notify("Vehicle", "Sit in the driver's seat of the car you want to flip.")
+		return
+	end
+
+	local Car = Seat.Parent
+	Car:PivotTo(Car:GetPivot() * CFrame.Angles(math.rad(180), 0, 0) + Vector3.new(0, 5, 0))
+end
+
+function Funcs:StopPadPicking()
+	Disconnect("PadPick")
+end
+
+function Funcs:AbortCarSpawner()
+	local Busy = Vehicle.spawning or Connections.PadPick
+	Funcs:StopPadPicking()
+
+	if Vehicle.spawning then
+		Vehicle.abort = true
+	end
+
+	Funcs:Notify("Car Spawner", Busy and "Stopped." or "The spawner isn't running.")
+end
+
+-- Step 1: click one of your vehicle spots
+function Funcs:StartCarSpawner()
+	if Vehicle.spawning then
+		Funcs:Notify("Car Spawner", "Already spawning. Press Abort first.")
+		return
+	end
+
+	if not Vehicle.color then
+		Funcs:Notify("Car Spawner", "Pick a car color first.")
+		return
+	end
+
+	Funcs:StopPadPicking()
+	Funcs:Notify("Car Spawner", "Click one of your vehicle spots.")
+
+	Connections.PadPick = LocalPlayer:GetMouse().Button1Up:Connect(function()
+		local Model = ClickedOwnModel()
+		if not Model then return end
+
+		local Type = Model:FindFirstChild("Type")
+		if not Type or Type.Value ~= "Vehicle Spot" then return end
+
+		local Button = Model:FindFirstChild("ButtonRemote_SpawnButton")
+		if not Button then return end
+
+		Funcs:StopPadPicking()
+		task.spawn(function()
+			Funcs:RunCarSpawner(Button)
+		end)
+	end)
+end
+
+-- Step 2: keep respawning the car until it comes out the color you want
+function Funcs:RunCarSpawner(Button)
+	Vehicle.spawning, Vehicle.abort = true, false
+
+	local Models = workspace:FindFirstChild("PlayerModels")
+	local Remote = ReplicatedStorage.Interaction.RemoteProxy
+	local Tries, Result = 0, nil
+
+	while not Vehicle.abort do
+		local PaintPart
+		local Watch = Models.ChildAdded:Connect(function(Model)
+			local Owner = Model:WaitForChild("Owner", 3)
+			if Owner and Owner.Value == LocalPlayer then
+				local Paint = Model:WaitForChild("PaintParts", 3)
+				local Part = Paint and Paint:WaitForChild("Part", 3)
+				if Part then
+					PaintPart = Part
+				end
+			end
+		end)
+
+		Remote:FireServer(Button)
+		Tries = Tries + 1
+
+		local Started = os.clock()
+		while not PaintPart and not Vehicle.abort and os.clock() - Started < 10 do
+			task.wait()
+		end
+		Watch:Disconnect()
+
+		if not PaintPart then
+			Result = Vehicle.abort and "Stopped" or "The car never appeared. Is the spot free?"
+			break
+		end
+
+		task.wait(1.5)
+
+		local Name = PaintPart.BrickColor.Name
+		if Name == Vehicle.color or (Vehicle.stopOnPink and Name == "Hot pink") then
+			Result = "Got a " .. Name .. " car after " .. Tries .. " tries."
+			break
+		end
+	end
+
+	Vehicle.spawning = false
+	Funcs:Notify("Car Spawner", Result or ("Stopped after " .. Tries .. " tries."))
+end
+
+
 local Buy = {
 	running = false,
 	abort   = false,
@@ -2207,6 +2540,11 @@ Section:Toggle("Infinite Jump", Config.infiniteJump, function(Value)
 end)
 
 
+Section:Toggle("NoClip", false, function(Value)
+	Funcs:NoClip(Value)
+end)
+
+
 -- [[ Section 2 ]]
 --
 Section = Tab:Section("Flight")
@@ -2242,6 +2580,18 @@ end)
 Section:Slider("FOV", Config.FOV, 30, 120, false, function(Value)
 	Config.FOV = Value
 	Funcs:FOV(Value)
+end)
+
+-- [[ Section 4 ]]
+--
+Section = Tab:Section("Tools")
+
+Section:Button("BTools", function()
+	Funcs:BTools()
+end)
+
+Section:Button("Safe Suicide", function()
+	Funcs:SafeDeath()
 end)
 
 -- MARK: Wood Tab
@@ -2389,6 +2739,49 @@ Section:Button("Lowest Sawmill Size", function()
 	Funcs:SetSawmillSize(false)
 end)
 
+-- MARK: Vehicle Tab
+--
+Tab = UI:Tab("Vehicle", "6034227061")
+
+Funcs:InstallVehicleHook()
+
+-- [[ Section 1 ]]
+--
+Section = Tab:Section("Vehicle")
+
+Section:Slider("Vehicle Speed", 1, 1, 5, true, function(Value)
+	Funcs:SetVehicleSetting("MaxSpeed", Value)
+end)
+
+Section:Slider("Steer Angle", 1.5, 1, 5, true, function(Value)
+	Funcs:SetVehicleSetting("SteerAngle", Value)
+end)
+
+Section:Button("Flip Vehicle", function()
+	Funcs:FlipVehicle()
+end)
+
+-- [[ Section 2 ]]
+--
+Section = Tab:Section("Car Spawner")
+
+Section:DropDown("Car Color", CarColors, function(Value)
+	if type(Value) == "table" then Value = Value[1] end
+	Vehicle.color = Value
+end)
+
+Section:Toggle("Always Stop On Pink", false, function(Value)
+	Vehicle.stopOnPink = Value
+end)
+
+Section:Button("Start Car Spawner", function()
+	Funcs:StartCarSpawner()
+end)
+
+Section:Button("Abort Car Spawner", function()
+	Funcs:AbortCarSpawner()
+end)
+
 -- MARK: World Tab
 --
 Tab = UI:Tab("World", "6026568213")
@@ -2416,6 +2809,19 @@ end)
 Section:Toggle("Global Shadows", Config.globalShadows, function(Value)
 	Config.globalShadows = Value
 	Funcs:GlobalShadows(Value)
+end)
+
+
+Section:Toggle("Spook Mode", false, function(Value)
+	Funcs:SpookMode(Value)
+end)
+
+Section:Toggle("Better Graphics", false, function(Value)
+	Funcs:BetterGraphics(Value)
+end)
+
+Section:Slider("Brightness", 1, 1, 6, false, function(Value)
+	Funcs:Brightness(Value)
 end)
 
 
