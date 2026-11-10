@@ -815,6 +815,420 @@ function Funcs:DestroyGreenBox()
 end
 
 
+-- MARK: Item Funcs
+--
+
+local ItemState = {
+	stacking   = false,
+	abort      = false,
+	iteration  = 25,
+	x          = 1,
+	z          = 1,
+	sawmilling = false,
+}
+
+local function Disconnect(Key)
+	if Connections[Key] then
+		Connections[Key]:Disconnect()
+		Connections[Key] = nil
+	end
+end
+
+-- The model of yours (in PlayerModels) that is under the mouse, or nil
+local function ClickedOwnModel()
+	local Models = workspace:FindFirstChild("PlayerModels")
+	local Target = LocalPlayer:GetMouse().Target
+	if not Models or not Target then return nil end
+
+	local Model = Target
+	while Model and Model.Parent ~= Models do
+		Model = Model.Parent
+	end
+	if not Model then return nil end
+
+	local Owner = Model:FindFirstChild("Owner")
+	if Owner and Owner.Value == LocalPlayer then
+		return Model
+	end
+	return nil
+end
+
+-- What kind of item a model is: the name of its identifying value and the value
+local function ItemKind(Model)
+	for _, Key in ipairs({ "ItemName", "PurchasedBoxItemName", "TreeClass" }) do
+		local Value = Model:FindFirstChild(Key)
+		if Value then
+			return Key, Value.Value
+		end
+	end
+	return nil
+end
+
+-- Every item of yours with the same kind as this one
+local function GetSameItems(Key, Value, AnyPart)
+	local List = {}
+	local Models = workspace:FindFirstChild("PlayerModels")
+	if not Models then return List end
+
+	for _, Model in ipairs(Models:GetChildren()) do
+		local Owner = Model:FindFirstChild("Owner")
+		local Kind = Model:FindFirstChild(Key)
+		if Owner and Owner.Value == LocalPlayer and Kind and Kind.Value == Value and (AnyPart or Model:FindFirstChild("Main")) then
+			table.insert(List, Model)
+		end
+	end
+	return List
+end
+
+
+-- Item Stacker
+--
+
+function Funcs:StopStackPicking()
+	Disconnect("StackSelect")
+	Disconnect("StackMove")
+	Disconnect("StackClick")
+	LocalPlayer:GetMouse().TargetFilter = nil
+
+	local Preview = workspace:FindFirstChild("SasMateStackPreview")
+	if Preview then
+		Preview:Destroy()
+	end
+end
+
+function Funcs:AbortStacking()
+	local Busy = ItemState.stacking or Connections.StackSelect or Connections.StackClick
+	Funcs:StopStackPicking()
+
+	if ItemState.stacking then
+		ItemState.abort = true
+	end
+
+	Funcs:Notify("Stacker", Busy and "Stopped stacking." or "Nothing is being stacked.")
+end
+
+-- Step 1: click one of your items to choose what to stack
+function Funcs:Stack()
+	if ItemState.stacking then
+		Funcs:Notify("Stacker", "Already stacking. Press Abort first.")
+		return
+	end
+
+	Funcs:StopStackPicking()
+	Funcs:Notify("Stacker", "Click one of your items to choose what to stack.")
+
+	Connections.StackSelect = LocalPlayer:GetMouse().Button1Down:Connect(function()
+		local Model = ClickedOwnModel()
+		if not Model then return end
+
+		local Key, Value = ItemKind(Model)
+		if not Key then return end
+
+		Disconnect("StackSelect")
+		Funcs:PickStackSpot(Key, Value)
+	end)
+end
+
+-- Step 2: a preview box follows the mouse over your land; click to place the stack
+function Funcs:PickStackSpot(Key, Value)
+	local List = GetSameItems(Key, Value)
+	if #List == 0 then
+		Funcs:Notify("Stacker", "Couldn't find any of those.")
+		return
+	end
+
+	local Size = List[1].Main.Size
+	local XCount, ZCount = ItemState.x, ItemState.z
+	local YCount = math.ceil(#List / (XCount * ZCount))
+	local Box = Vector3.new(Size.X * XCount, Size.Y * YCount, Size.Z * ZCount)
+
+	local Preview = Instance.new("Part")
+	Preview.Name = "SasMateStackPreview"
+	Preview.Anchored = true
+	Preview.CanCollide = false
+	Preview.CanQuery = false
+	Preview.CanTouch = false
+	Preview.Transparency = 1
+	Preview.Size = Box
+	Preview.Parent = workspace
+
+	local Outline = Instance.new("SelectionBox")
+	Outline.Adornee = Preview
+	Outline.LineThickness = 0.1
+	Outline.Parent = Preview
+
+	local Mouse = LocalPlayer:GetMouse()
+	Mouse.TargetFilter = Preview
+
+	Funcs:Notify("Stacker", "Found " .. #List .. ". Move over your land and click to place the stack.")
+
+	Connections.StackMove = Mouse.Move:Connect(function()
+		local Target = Mouse.Target
+		if Target and (Target.Name == "Square" or Target.Name == "OriginSquare") then
+			Preview.CFrame = CFrame.new(Mouse.Hit.Position + Vector3.new(Box.X / 2, Box.Y / 2, Box.Z / 2))
+		end
+	end)
+
+	local Placed = false
+	Connections.StackClick = Mouse.Button1Down:Connect(function()
+		if Placed then return end
+		Placed = true
+
+		local Origin = Mouse.Hit.Position
+		Funcs:StopStackPicking()
+		Mouse.TargetFilter = nil
+
+		task.spawn(function()
+			Funcs:RunStack(List, Origin)
+		end)
+	end)
+end
+
+-- Step 3: move every item into its slot in the grid
+function Funcs:RunStack(List, Origin)
+	local Root = GetRoot()
+	if not Root then return end
+
+	ItemState.stacking, ItemState.abort = true, false
+	local Home = Root.CFrame
+	local Size = List[1].Main.Size
+	local XCount, ZCount = ItemState.x, ItemState.z
+	local Placed = 0
+
+	local Ok, Err = pcall(function()
+		local Index = 0
+		for Y = 1, math.ceil(#List / (XCount * ZCount)) do
+			for X = 1, XCount do
+				for Z = 1, ZCount do
+					if ItemState.abort then return end
+
+					Index = Index + 1
+					local Item = List[Index]
+					local Main = Item and Item:FindFirstChild("Main")
+					if Item and Item.Parent and Main then
+						local Spot = Origin + Vector3.new((X - 0.5) * Size.X, (Y - 0.5) * Size.Y + 0.1, (Z - 0.5) * Size.Z)
+
+						-- Stand next to it and take control of it
+						Funcs:TeleportTo(CFrame.new(Main.Position + Vector3.new(Size.Z + 3, 1, 0)))
+						task.wait(0.1)
+						TakeControl(Item, Main, 4, function() return not ItemState.abort end)
+
+						local Freeze = Instance.new("BodyVelocity")
+						Freeze.Velocity = Vector3.zero
+						Freeze.MaxForce = Vector3.new(math.huge, math.huge, math.huge)
+						Freeze.Parent = Main
+
+						for _ = 1, ItemState.iteration do
+							if ItemState.abort or not Item.Parent then break end
+							Main.AssemblyLinearVelocity = Vector3.zero
+							Drag(Item)
+							Item:PivotTo(CFrame.new(Spot))
+							task.wait()
+						end
+
+						Placed = Placed + 1
+						task.delay(5, function()
+							if Freeze.Parent then Freeze:Destroy() end
+						end)
+					end
+				end
+			end
+		end
+	end)
+
+	ItemState.stacking = false
+	Funcs:TeleportTo(Home)
+
+	if not Ok then
+		Funcs:Notify("Stacker", "Stopped: " .. tostring(Err))
+	elseif ItemState.abort then
+		Funcs:Notify("Stacker", "Stopped after " .. Placed .. "/" .. #List .. ".")
+	else
+		Funcs:Notify("Stacker", "Stacked " .. Placed .. "/" .. #List .. ".")
+	end
+end
+
+
+-- Other
+--
+
+-- Stronger, snappier item dragging
+function Funcs:HardDragger(Value)
+	Disconnect("HardDragger")
+	if not Value then return end
+
+	Connections.HardDragger = workspace.ChildAdded:Connect(function(Dragger)
+		if Dragger.Name ~= "Dragger" then return end
+
+		local Gyro = Dragger:WaitForChild("BodyGyro", 3)
+		local Position = Dragger:WaitForChild("BodyPosition", 3)
+		if not Gyro or not Position then return end
+
+		Dragger.BrickColor = BrickColor.new("Hot pink")
+
+		repeat
+			Position.P = 80000
+			Position.D = 1000
+			Position.MaxForce = Vector3.new(1, 1, 1) * 1000000
+			Gyro.MaxTorque = Vector3.new(1, 1, 1) * 200
+			Gyro.P = 1200
+			Gyro.D = 140
+			task.wait()
+		until not Dragger.Parent or not Position.Parent
+
+		if Dragger.Parent then
+			Dragger.BrickColor = BrickColor.new("Deep blue")
+		end
+	end)
+end
+
+-- Click one of your items to see how many of that kind you own
+function Funcs:CountItems(Value)
+	Disconnect("CountItems")
+	if not Value then return end
+
+	Connections.CountItems = LocalPlayer:GetMouse().Button1Down:Connect(function()
+		local Model = ClickedOwnModel()
+		if not Model then return end
+
+		local Key, Kind = ItemKind(Model)
+		if not Key then return end
+
+		local Count = #GetSameItems(Key, Kind, true)
+
+		Funcs:Notify("Count Items", "You have " .. Count .. " x " .. tostring(Kind))
+	end)
+end
+
+-- Click a box (or item) of yours to open it from anywhere
+function Funcs:ClickToUnbox(Value)
+	Disconnect("ClickToUnbox")
+	if not Value then return end
+
+	Connections.ClickToUnbox = LocalPlayer:GetMouse().Button1Down:Connect(function()
+		local Model = ClickedOwnModel()
+		if not Model then return end
+
+		if Model:FindFirstChild("PurchasedBoxItemName") then
+			ReplicatedStorage.Interaction.ClientInteracted:FireServer(Model, "Open box")
+		elseif Model:FindFirstChild("ItemName") and Model:FindFirstChild("DraggableItem") then
+			ReplicatedStorage.Interaction.RemoteProxy:FireServer(Model)
+		end
+	end)
+end
+
+-- Click an axe (or other tool) of yours lying on the ground to pick it up from anywhere
+function Funcs:FarAxeEquip(Value)
+	Disconnect("FarAxeEquip")
+	if not Value then return end
+
+	Connections.FarAxeEquip = LocalPlayer:GetMouse().Button1Down:Connect(function()
+		local Model = ClickedOwnModel()
+		if not Model then return end
+
+		local Type = Model:FindFirstChild("Type")
+		if (Type and Type.Value == "Tool") or Model:FindFirstChild("ToolName") then
+			ReplicatedStorage.Interaction.ClientInteracted:FireServer(Model, "Pick up tool")
+		end
+	end)
+end
+
+-- Hides (or shows) the percentage bar above your blueprints
+local function SetBlueprintBars(Visible)
+	local Models = workspace:FindFirstChild("PlayerModels")
+	if not Models then return end
+
+	for _, Model in ipairs(Models:GetChildren()) do
+		local Type = Model:FindFirstChild("Type")
+		local Main = Model:FindFirstChild("Main")
+		local Bar = Main and Main:FindFirstChild("ProgressBillboard")
+		if Type and Type.Value == "Blueprint" and Bar then
+			Bar.Enabled = Visible
+		end
+	end
+end
+
+function Funcs:RemoveBlueprintPercentage(Value)
+	Disconnect("BlueprintBars")
+
+	if not Value then
+		SetBlueprintBars(true)
+		return
+	end
+
+	local Models = workspace:FindFirstChild("PlayerModels")
+	if not Models then return end
+
+	SetBlueprintBars(false)
+
+	Connections.BlueprintBars = Models.ChildAdded:Connect(function(Model)
+		local Type = Model:WaitForChild("Type", 3)
+		local Main = Model:WaitForChild("Main", 3)
+		if Type and Type.Value == "Blueprint" and Main then
+			local Bar = Main:WaitForChild("ProgressBillboard", 3)
+			if Bar then
+				Bar.Enabled = false
+			end
+		end
+	end)
+end
+
+
+-- Extras
+--
+
+-- Click a sawmill, then it is set to its biggest (or smallest) size
+function Funcs:SetSawmillSize(Biggest)
+	if ItemState.sawmilling then
+		Funcs:Notify("Sawmill", "Already working on a sawmill.")
+		return
+	end
+
+	Disconnect("SawmillPick")
+	Funcs:Notify("Sawmill", "Click the sawmill you want to change.")
+
+	Connections.SawmillPick = LocalPlayer:GetMouse().Button1Down:Connect(function()
+		local Models = workspace:FindFirstChild("PlayerModels")
+		local Target = LocalPlayer:GetMouse().Target
+		if not Models or not Target then return end
+
+		local Model = Target
+		while Model and Model.Parent ~= Models do
+			Model = Model.Parent
+		end
+
+		local Name = Model and Model:FindFirstChild("ItemName")
+		if not Name or Name.Value:sub(1, 7) ~= "Sawmill" then return end
+
+		Disconnect("SawmillPick")
+		ItemState.sawmilling = true
+
+		task.spawn(function()
+			local Remote = ReplicatedStorage.Interaction.RemoteProxy
+			local XButton = Model:FindFirstChild(Biggest and "ButtonRemote_XUp" or "ButtonRemote_XDown")
+			local YButton = Model:FindFirstChild(Biggest and "ButtonRemote_YUp" or "ButtonRemote_YDown")
+
+			if not XButton or not YButton then
+				ItemState.sawmilling = false
+				Funcs:Notify("Sawmill", "That sawmill has no size buttons.")
+				return
+			end
+
+			for _ = 1, 20 do
+				if not Model.Parent then break end
+				Remote:FireServer(XButton)
+				task.wait(1)
+				Remote:FireServer(YButton)
+				task.wait(1)
+			end
+
+			ItemState.sawmilling = false
+			Funcs:Notify("Sawmill", Biggest and "Sawmill set to its biggest size." or "Sawmill set to its smallest size.")
+		end)
+	end)
+end
+
+
 local Buy = {
 	running = false,
 	abort   = false,
@@ -1909,6 +2323,70 @@ end)
 
 Section:Button("Purchase Power To Build With Ease", function()
 	Funcs:MiscBuy(3, 10009000, "Power To Build With Ease")
+end)
+
+-- MARK: Items Tab
+--
+Tab = UI:Tab("Items", "6035053278")
+
+-- [[ Section 1 ]]
+--
+Section = Tab:Section("Item Stacker")
+
+Section:Slider("Iteration", ItemState.iteration, 25, 100, false, function(Value)
+	ItemState.iteration = Value
+end)
+
+Section:Slider("X Axis", ItemState.x, 1, 30, false, function(Value)
+	ItemState.x = Value
+end)
+
+Section:Slider("Z Axis", ItemState.z, 1, 30, false, function(Value)
+	ItemState.z = Value
+end)
+
+Section:Button("Stack", function()
+	Funcs:Stack()
+end)
+
+Section:Button("Abort Stacking", function()
+	Funcs:AbortStacking()
+end)
+
+-- [[ Section 2 ]]
+--
+Section = Tab:Section("Other")
+
+Section:Toggle("Hard Dragger", false, function(Value)
+	Funcs:HardDragger(Value)
+end)
+
+Section:Toggle("Count Items", false, function(Value)
+	Funcs:CountItems(Value)
+end)
+
+Section:Toggle("Click To Unbox", false, function(Value)
+	Funcs:ClickToUnbox(Value)
+end)
+
+Section:Toggle("Far Axe Equip", false, function(Value)
+	Funcs:FarAxeEquip(Value)
+end)
+
+Section:Toggle("Remove Blueprint Percentage", false, function(Value)
+	Funcs:RemoveBlueprintPercentage(Value)
+end)
+
+-- [[ Section 3 ]]
+--
+Section = Tab:Section("Extras")
+
+Section:Button("Max Sawmill Size", function()
+	Funcs:SetSawmillSize(true)
+end)
+
+Section:Button("Lowest Sawmill Size", function()
+	Funcs:SetSawmillSize(false)
 end)
 
 -- MARK: World Tab
