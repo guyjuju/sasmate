@@ -46,7 +46,7 @@ local Config = {
 
 	-- Flight
 	flightEnabled = false, -- master toggle (allows the key to start/stop flying)
-	flightSpeed   = 150,
+	flightSpeed   = 600,
 
 }
 
